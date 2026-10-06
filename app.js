@@ -18,7 +18,7 @@ function save() {
   try {
     localStorage.setItem(STORE_KEY, JSON.stringify(db));
   } catch (e) {
-    alert('Could not save your data: ' + e.message);
+    ask('Could not save your data: ' + e.message, { okOnly: true });
   }
 }
 
@@ -399,6 +399,29 @@ function streak(h) {
   return n;
 }
 
+/* ---------- Confirm box (in-app, since some browsers block pop-ups) ---------- */
+
+const confirmBox = document.getElementById('confirm');
+
+function ask(message, { ok = 'OK', danger = false, okOnly = false } = {}) {
+  return new Promise((resolve) => {
+    confirmBox.innerHTML = `
+      <form method="dialog">
+        <p class="confirm-msg">${esc(message)}</p>
+        <div class="modal-actions"><div class="right">
+          ${okOnly ? '' : '<button type="button" class="btn ghost" data-ans="no">Cancel</button>'}
+          <button type="button" class="btn ${danger ? 'danger-solid' : ''}" data-ans="yes">${esc(ok)}</button>
+        </div></div>
+      </form>`;
+    const done = (v) => { confirmBox.close(); resolve(v); };
+    confirmBox.querySelector('[data-ans="yes"]').onclick = () => done(true);
+    const no = confirmBox.querySelector('[data-ans="no"]');
+    if (no) no.onclick = () => done(false);
+    confirmBox.oncancel = () => resolve(false);
+    confirmBox.showModal();
+  });
+}
+
 /* ---------- Form modal ---------- */
 
 // fields: [{ name, label, type, options, required, placeholder }]
@@ -438,8 +461,8 @@ function openForm({ title, fields, values = {}, onSave, onDelete }) {
   };
   modal.querySelector('[data-modal="cancel"]').onclick = () => modal.close();
   const del = modal.querySelector('[data-modal="delete"]');
-  if (del) del.onclick = () => {
-    if (!confirm('Delete this? This cannot be undone.')) return;
+  if (del) del.onclick = async () => {
+    if (!(await ask('Delete this? This cannot be undone.', { ok: 'Delete', danger: true }))) return;
     onDelete();
     save();
     modal.close();
@@ -559,6 +582,9 @@ function placeForm(p) {
 
 /* ---------- Actions (clicks) ---------- */
 
+// Inside an embedded viewer, file downloads are blocked, so only offer Copy there.
+const inFrame = window.self !== window.top;
+
 const currentPerson = () => find('people', state.personId);
 
 const actions = {
@@ -617,18 +643,73 @@ const actions = {
   'pick-place': () => {
     const pool = db.places.filter((p) => !p.visited && (state.placeType === 'all' || p.type === state.placeType));
     const p = pool[Math.floor(Math.random() * pool.length)];
-    if (p && confirm(`🎲 How about: ${p.name}${p.area ? ' (' + p.area + ')' : ''}?\n\nOpen it?`)) placeForm(p);
+    if (!p) return;
+    ask(`🎲 How about ${p.name}${p.area ? ' (' + p.area + ')' : ''}?`, { ok: 'Show me' })
+      .then((yes) => yes && placeForm(p));
   },
 
   export() {
-    const blob = new Blob([JSON.stringify(db, null, 2)], { type: 'application/json' });
-    const a = document.createElement('a');
-    a.href = URL.createObjectURL(blob);
-    a.download = `organizer-backup-${todayStr()}.json`;
-    a.click();
-    URL.revokeObjectURL(a.href);
+    const json = JSON.stringify(db, null, 2);
+    modal.innerHTML = `
+      <form method="dialog">
+        <h3>Export backup</h3>
+        <p class="meta">Copy this text and keep it somewhere safe, like a note or an email to yourself.
+          To restore it, use Import backup and paste it in.</p>
+        <textarea id="backup-text" readonly>${esc(json)}</textarea>
+        <div class="modal-actions">
+          ${inFrame ? '' : '<button type="button" class="btn ghost" data-modal="download">Download file</button>'}
+          <div class="right">
+            <button type="button" class="btn ghost" data-modal="cancel">Close</button>
+            <button type="button" class="btn" data-modal="copy">Copy</button>
+          </div>
+        </div>
+      </form>`;
+    const text = modal.querySelector('#backup-text');
+    modal.querySelector('[data-modal="cancel"]').onclick = () => modal.close();
+    modal.querySelector('[data-modal="copy"]').onclick = (e) => {
+      navigator.clipboard?.writeText(json)
+        .then(() => { e.target.textContent = 'Copied ✓'; })
+        .catch(() => { text.focus(); text.select(); });
+    };
+    const dl = modal.querySelector('[data-modal="download"]');
+    if (dl) dl.onclick = () => {
+      const a = document.createElement('a');
+      a.href = URL.createObjectURL(new Blob([json], { type: 'application/json' }));
+      a.download = `organizer-backup-${todayStr()}.json`;
+      a.click();
+      setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+    };
+    modal.showModal();
   },
-  import() { document.getElementById('import-file').click(); },
+  import() {
+    modal.innerHTML = `
+      <form method="dialog">
+        <h3>Import backup</h3>
+        <p class="meta">Paste the backup text below, or choose a backup file.
+          This replaces everything currently in the app.</p>
+        <textarea id="import-text" placeholder='{"tasks": [ ... ]}'></textarea>
+        <button type="button" class="btn ghost small" data-modal="file">Choose a file instead</button>
+        <p class="meta overdue" id="import-error" hidden></p>
+        <div class="modal-actions"><div class="right">
+          <button type="button" class="btn ghost" data-modal="cancel">Cancel</button>
+          <button type="submit" class="btn">Replace my data</button>
+        </div></div>
+      </form>`;
+    modal.querySelector('[data-modal="cancel"]').onclick = () => modal.close();
+    modal.querySelector('[data-modal="file"]').onclick = () => document.getElementById('import-file').click();
+    modal.querySelector('form').onsubmit = (e) => {
+      e.preventDefault();
+      const err = modal.querySelector('#import-error');
+      try {
+        restore(modal.querySelector('#import-text').value);
+        modal.close();
+      } catch (ex) {
+        err.textContent = 'That doesn\'t look like a backup from this app. Paste the full text from Export backup.';
+        err.hidden = false;
+      }
+    };
+    modal.showModal();
+  },
 };
 
 document.addEventListener('click', (e) => {
@@ -648,20 +729,20 @@ document.addEventListener('input', (e) => {
   }
 });
 
+function restore(text) {
+  const data = JSON.parse(text);
+  if (typeof data !== 'object' || !data || Array.isArray(data)) throw new Error('Not a backup');
+  db = Object.assign(emptyDb(), data);
+  save();
+  render();
+}
+
 document.getElementById('import-file').addEventListener('change', async (e) => {
   const file = e.target.files[0];
   e.target.value = '';
   if (!file) return;
-  try {
-    const data = JSON.parse(await file.text());
-    if (typeof data !== 'object' || !data) throw new Error('Not a backup file');
-    if (!confirm('Replace everything in this app with the backup? Your current data will be overwritten.')) return;
-    db = Object.assign(emptyDb(), data);
-    save();
-    render();
-  } catch (err) {
-    alert('Could not import: ' + err.message);
-  }
+  const area = document.getElementById('import-text');
+  if (area) area.value = await file.text();
 });
 
 // Re-render when the day changes (e.g. app left open overnight).

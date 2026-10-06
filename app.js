@@ -175,9 +175,9 @@ const PERSON_KINDS = {
 const state = {
   view: 'today',
   taskFilter: 'open',
-  taskCat: 'all',
+  taskCats: [], // selected category ids ('none' = no category); empty = all
   taskHigh: false,
-  taskMonth: false,
+  taskDates: [], // 'month' and/or 'nodue'; empty = any date
   calMonth: todayStr().slice(0, 7),
   calDay: todayStr(),
   noteQuery: '',
@@ -335,39 +335,53 @@ const views = {
 
   tasks() {
     const f = state.taskFilter;
-    const c = state.taskCat;
-    if (c !== 'all' && c !== 'none' && !find('categories', c)) state.taskCat = 'all';
+    state.taskCats = state.taskCats.filter((id) => id === 'none' || find('categories', id));
+    const cats = state.taskCats;
     const t0 = todayStr();
     const monthEnd = ymd(new Date(Number(t0.slice(0, 4)), Number(t0.slice(5, 7)), 0));
-    // "This month": due by the end of this month (overdue included), or no due date at all.
-    const thisMonth = (t) => !t.due || t.due <= monthEnd;
+    const DATE_TESTS = {
+      month: (t) => !!t.due && t.due <= monthEnd, // due by the end of this month, overdue included
+      nodue: (t) => !t.due,
+    };
     const isHigh = (t) => t.priority === 'high';
-    const byStatus = db.tasks.filter((t) => (f === 'open' ? !t.done : f === 'done' ? t.done : true))
+    const inCat = (t, id) => (id === 'none' ? !find('categories', t.category) : t.category === id);
+    // Buttons in the same row add together (this month OR no due date; Errands OR Home).
+    // High priority always narrows the list.
+    const byStatus = db.tasks.filter((t) => (f === 'open' ? !t.done : f === 'done' ? t.done : true));
+    const byDate = byStatus
       .filter((t) => !state.taskHigh || isHigh(t))
-      .filter((t) => !state.taskMonth || thisMonth(t));
-    const statusOnly = db.tasks.filter((t) => (f === 'open' ? !t.done : f === 'done' ? t.done : true));
-    const inCat = (t, id) => (id === 'all' ? true : id === 'none' ? !find('categories', t.category) : t.category === id);
-    let list = byStatus.filter((t) => inCat(t, state.taskCat));
-    const count = (id) => byStatus.filter((t) => inCat(t, id)).length;
-    const active = find('categories', state.taskCat);
+      .filter((t) => !state.taskDates.length || state.taskDates.some((k) => DATE_TESTS[k](t)));
+    let list = byDate.filter((t) => !cats.length || cats.some((id) => inCat(t, id)));
+    const count = (id) => byDate.filter((t) => inCat(t, id)).length;
     const prioRank = { high: 0, normal: 1, low: 2 };
     list = list.sort((a, b) => byDue(a, b) || prioRank[a.priority || 'normal'] - prioRank[b.priority || 'normal']);
+    const dateChip = (k, label) => {
+      const on = state.taskDates.includes(k);
+      return `<button class="chip ${on ? 'active' : ''}" data-action="task-date" data-value="${k}" aria-pressed="${on}">${label} <span class="count">${byStatus.filter(DATE_TESTS[k]).length}</span></button>`;
+    };
+    const catChip = (id, label) => {
+      const on = cats.includes(id);
+      return `<button class="chip ${on ? 'active' : ''}" data-action="task-cat" data-value="${id}" aria-pressed="${on}">${label} <span class="count">${count(id)}</span></button>`;
+    };
+    const selectedCats = cats.map((id) => find('categories', id)).filter(Boolean);
     return `
       <div class="chips">
         ${['open', 'done', 'all'].map((k) =>
           `<button class="chip ${f === k ? 'active' : ''}" data-action="task-filter" data-value="${k}">${k[0].toUpperCase() + k.slice(1)}</button>`).join('')}
       </div>
       <div class="chips">
-        <button class="chip ${state.taskHigh ? 'active' : ''}" data-action="task-high" aria-pressed="${state.taskHigh}">🔥 High priority <span class="count">${statusOnly.filter(isHigh).length}</span></button>
-        <button class="chip ${state.taskMonth ? 'active' : ''}" data-action="task-month" aria-pressed="${state.taskMonth}">📆 This month <span class="count">${statusOnly.filter(thisMonth).length}</span></button>
+        <button class="chip ${state.taskHigh ? 'active' : ''}" data-action="task-high" aria-pressed="${state.taskHigh}">🔥 High priority <span class="count">${byStatus.filter(isHigh).length}</span></button>
+        ${dateChip('month', '📆 This month')}
+        ${dateChip('nodue', '🗓️ No due date')}
       </div>
       <div class="chips">
-        <button class="chip ${state.taskCat === 'all' ? 'active' : ''}" data-action="task-cat" data-value="all">📋 All <span class="count">${count('all')}</span></button>
-        ${db.categories.map((cat) => `<button class="chip ${state.taskCat === cat.id ? 'active' : ''}" data-action="task-cat" data-value="${cat.id}">${catLabel(cat)} <span class="count">${count(cat.id)}</span></button>`).join('')}
-        ${db.categories.length && db.tasks.some((t) => !find('categories', t.category)) ? `<button class="chip ${state.taskCat === 'none' ? 'active' : ''}" data-action="task-cat" data-value="none">📥 No category <span class="count">${count('none')}</span></button>` : ''}
+        <button class="chip ${!cats.length ? 'active' : ''}" data-action="task-cat" data-value="all">📋 All <span class="count">${byDate.length}</span></button>
+        ${db.categories.map((cat) => catChip(cat.id, catLabel(cat))).join('')}
+        ${db.categories.length && db.tasks.some((t) => !find('categories', t.category)) ? catChip('none', '📥 No category') : ''}
         <button class="chip add-chip" data-action="add-category">＋ Category</button>
       </div>
-      ${active ? `<button class="btn ghost small edit-cat" data-action="edit-category" data-id="${active.id}">✏️ Edit ${catLabel(active)}</button>` : ''}
+      ${selectedCats.length ? `<div class="edit-cats">${selectedCats.map((c) =>
+        `<button class="btn ghost small" data-action="edit-category" data-id="${c.id}">✏️ Edit ${catLabel(c)}</button>`).join('')}</div>` : ''}
       <div class="list">${list.map(taskRow).join('') || empty(f === 'done' ? 'No finished tasks here yet.' : 'No tasks here. Tap ＋ to add one.')}</div>`;
   },
 
@@ -701,7 +715,8 @@ function taskForm(task) {
     ],
     values: task || {
       due: state.view === 'calendar' ? state.calDay : '',
-      category: state.view === 'tasks' && find('categories', state.taskCat) ? state.taskCat : '',
+      // Picking exactly one category filter files new tasks there.
+      category: state.view === 'tasks' && state.taskCats.length === 1 && find('categories', state.taskCats[0]) ? state.taskCats[0] : '',
     },
     onSave: (d) => {
       if (d.newCategory) d.category = addCategory(d.newCategory).id;
@@ -735,12 +750,12 @@ function categoryForm(cat) {
     values: cat || { emoji: '🏷️' },
     onSave: (d) => {
       if (cat) Object.assign(cat, d);
-      else { const c = addCategory(`${d.emoji} ${d.name}`); state.taskCat = c.id; }
+      else addCategory(`${d.emoji} ${d.name}`);
     },
     onDelete: cat && (() => {
       remove('categories', cat.id);
       db.tasks.forEach((t) => { if (t.category === cat.id) t.category = ''; });
-      state.taskCat = 'all';
+      state.taskCats = state.taskCats.filter((id) => id !== cat.id);
     }),
   });
 }
@@ -840,6 +855,8 @@ function placeForm(p) {
 // Inside an embedded viewer, file downloads are blocked, so only offer Copy there.
 const inFrame = window.self !== window.top;
 
+const toggleIn = (list, v) => (list.includes(v) ? list.filter((x) => x !== v) : [...list, v]);
+
 const currentPerson = () => find('people', state.personId);
 
 const actions = {
@@ -857,9 +874,12 @@ const actions = {
   'edit-task': ({ id }) => taskForm(find('tasks', id)),
   'toggle-task': ({ id }) => { toggleTask(find('tasks', id)); save(); render(); },
   'task-filter': ({ value }) => { state.taskFilter = value; render(); },
-  'task-cat': ({ value }) => { state.taskCat = value; render(); },
+  'task-cat': ({ value }) => {
+    state.taskCats = value === 'all' ? [] : toggleIn(state.taskCats, value);
+    render();
+  },
   'task-high': () => { state.taskHigh = !state.taskHigh; render(); },
-  'task-month': () => { state.taskMonth = !state.taskMonth; render(); },
+  'task-date': ({ value }) => { state.taskDates = toggleIn(state.taskDates, value); render(); },
   'add-category': () => categoryForm(),
   'edit-category': ({ id }) => categoryForm(find('categories', id)),
 

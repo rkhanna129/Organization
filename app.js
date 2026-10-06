@@ -6,7 +6,7 @@
 /* ---------- Storage ---------- */
 
 const STORE_KEY = 'organizer.v1';
-const emptyDb = () => ({ tasks: [], events: [], notes: [], habits: [], people: [], places: [] });
+const emptyDb = () => ({ tasks: [], categories: [], events: [], notes: [], habits: [], people: [], places: [] });
 
 function load() {
   try {
@@ -134,6 +134,14 @@ const fmtTime = (t) => {
 const byDue = (a, b) => (a.due || '9999').localeCompare(b.due || '9999');
 const byTime = (a, b) => (a.time || '').localeCompare(b.time || '');
 const find = (list, id) => db[list].find((x) => x.id === id);
+const catLabel = (c) => `${c.emoji} ${esc(c.name)}`;
+const mapUrl = (p) => `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(p.address || [p.name, p.area].filter(Boolean).join(' '))}`;
+
+// "🏠 Home" -> { emoji: '🏠', name: 'Home' }. Text without a leading emoji gets a tag emoji.
+function splitEmoji(text) {
+  const m = text.trim().match(/^((?:\p{Extended_Pictographic}|\p{Regional_Indicator})[\uFE0F\u200D\p{Extended_Pictographic}\p{Emoji_Modifier}]*)\s*(.*)$/u);
+  return m ? { emoji: m[1], name: m[2].trim() || m[1] } : { emoji: '🏷️', name: text.trim() };
+}
 const remove = (list, id) => { db[list] = db[list].filter((x) => x.id !== id); };
 
 function dueLabel(due) {
@@ -166,6 +174,7 @@ const PERSON_KINDS = {
 const state = {
   view: 'today',
   taskFilter: 'open',
+  taskCat: 'all',
   calMonth: todayStr().slice(0, 7),
   calDay: todayStr(),
   noteQuery: '',
@@ -206,7 +215,7 @@ function taskRow(t) {
       <button class="check ${t.done ? 'on' : ''}" data-action="toggle-task" data-id="${t.id}" aria-label="Mark done">${t.done ? '✓' : ''}</button>
       <div class="grow">
         <div class="title">${esc(t.title)}</div>
-        ${dueLabel(t.due)}
+        <div class="task-meta">${dueLabel(t.due)}${t.category && find('categories', t.category) ? `<span class="cat-tag">${catLabel(find('categories', t.category))}</span>` : ''}</div>
       </div>
       <span class="prio ${t.priority || 'normal'}" title="${esc(t.priority || 'normal')} priority"></span>
     </div>`;
@@ -305,7 +314,7 @@ const views = {
         <div class="card suggest">
           <h3>${esc(pick.name)}</h3>
           <div class="meta">${PLACE_TYPES[pick.type] || ''}${pick.area ? ' · ' + esc(pick.area) : ''}</div>
-          ${safeUrl(pick.link) ? `<a class="place-link" href="${esc(pick.link)}" target="_blank" rel="noopener">Open saved post ↗</a>` : ''}
+          ${placeLinks(pick)}
         </div>
       </section>` : ''}
 
@@ -323,7 +332,13 @@ const views = {
 
   tasks() {
     const f = state.taskFilter;
-    let list = db.tasks.filter((t) => (f === 'open' ? !t.done : f === 'done' ? t.done : true));
+    const c = state.taskCat;
+    if (c !== 'all' && c !== 'none' && !find('categories', c)) state.taskCat = 'all';
+    const byStatus = db.tasks.filter((t) => (f === 'open' ? !t.done : f === 'done' ? t.done : true));
+    const inCat = (t, id) => (id === 'all' ? true : id === 'none' ? !find('categories', t.category) : t.category === id);
+    let list = byStatus.filter((t) => inCat(t, state.taskCat));
+    const count = (id) => byStatus.filter((t) => inCat(t, id)).length;
+    const active = find('categories', state.taskCat);
     const prioRank = { high: 0, normal: 1, low: 2 };
     list = list.sort((a, b) => byDue(a, b) || prioRank[a.priority || 'normal'] - prioRank[b.priority || 'normal']);
     return `
@@ -331,7 +346,14 @@ const views = {
         ${['open', 'done', 'all'].map((k) =>
           `<button class="chip ${f === k ? 'active' : ''}" data-action="task-filter" data-value="${k}">${k[0].toUpperCase() + k.slice(1)}</button>`).join('')}
       </div>
-      <div class="list">${list.map(taskRow).join('') || empty(f === 'done' ? 'No finished tasks yet.' : 'No tasks. Tap ＋ to add one.')}</div>`;
+      <div class="chips">
+        <button class="chip ${state.taskCat === 'all' ? 'active' : ''}" data-action="task-cat" data-value="all">📋 All <span class="count">${count('all')}</span></button>
+        ${db.categories.map((cat) => `<button class="chip ${state.taskCat === cat.id ? 'active' : ''}" data-action="task-cat" data-value="${cat.id}">${catLabel(cat)} <span class="count">${count(cat.id)}</span></button>`).join('')}
+        ${db.categories.length && db.tasks.some((t) => !find('categories', t.category)) ? `<button class="chip ${state.taskCat === 'none' ? 'active' : ''}" data-action="task-cat" data-value="none">📥 No category <span class="count">${count('none')}</span></button>` : ''}
+        <button class="chip add-chip" data-action="add-category">＋ Category</button>
+      </div>
+      ${active ? `<button class="btn ghost small edit-cat" data-action="edit-category" data-id="${active.id}">✏️ Edit ${catLabel(active)}</button>` : ''}
+      <div class="list">${list.map(taskRow).join('') || empty(f === 'done' ? 'No finished tasks here yet.' : 'No tasks here. Tap ＋ to add one.')}</div>`;
   },
 
   calendar() {
@@ -437,11 +459,18 @@ const views = {
             <div class="title">${esc(p.name)}</div>
             <div class="meta">${PLACE_TYPES[p.type] || ''}${p.area ? ' · ' + esc(p.area) : ''}${p.rating ? ` · <span class="stars">${'★'.repeat(p.rating)}</span>` : ''}</div>
             ${p.notes ? `<div class="meta">${esc(p.notes)}</div>` : ''}
-            ${safeUrl(p.link) ? `<a class="place-link" href="${esc(p.link)}" target="_blank" rel="noopener">Open saved post ↗</a>` : ''}
+            ${placeLinks(p)}
           </div>
         </div>`).join('') || empty(f === 'visited' ? 'No places checked off yet.' : 'Saved a spot on Instagram? Tap ＋ and paste the link here.')}</div>`;
   },
 };
+
+function placeLinks(p) {
+  return `<div class="place-links">
+    <a class="place-link" href="${esc(mapUrl(p))}" target="_blank" rel="noopener">🗺️ Map</a>
+    ${safeUrl(p.link) ? `<a class="place-link" href="${esc(p.link)}" target="_blank" rel="noopener">📸 Saved post</a>` : ''}
+  </div>`;
+}
 
 function noteList() {
   const q = state.noteQuery.trim().toLowerCase();
@@ -575,11 +604,52 @@ function taskForm(task) {
       { name: 'title', label: 'Task', required: true, placeholder: 'What needs doing?' },
       { name: 'due', label: 'Due date', type: 'date' },
       { name: 'priority', label: 'Priority', type: 'select', options: PRIORITIES },
+      { name: 'category', label: 'Category', type: 'select',
+        options: Object.fromEntries([['', '— None —'], ...db.categories.map((c) => [c.id, `${c.emoji} ${c.name}`])]) },
+      { name: 'newCategory', label: '…or create a new category', placeholder: 'e.g. 🏠 Home  (emoji optional)' },
       { name: 'notes', label: 'Notes', type: 'textarea' },
     ],
-    values: task || { due: state.view === 'calendar' ? state.calDay : '' },
-    onSave: (d) => (task ? Object.assign(task, d) : db.tasks.push({ id: uid(), done: false, createdAt: Date.now(), ...d })),
+    values: task || {
+      due: state.view === 'calendar' ? state.calDay : '',
+      category: state.view === 'tasks' && find('categories', state.taskCat) ? state.taskCat : '',
+    },
+    onSave: (d) => {
+      if (d.newCategory) d.category = addCategory(d.newCategory).id;
+      delete d.newCategory;
+      if (task) Object.assign(task, d);
+      else db.tasks.push({ id: uid(), done: false, createdAt: Date.now(), ...d });
+    },
     onDelete: task && (() => remove('tasks', task.id)),
+  });
+}
+
+// Reuses an existing category with the same name instead of making a duplicate.
+function addCategory(text) {
+  const { emoji, name } = splitEmoji(text);
+  const existing = db.categories.find((c) => c.name.toLowerCase() === name.toLowerCase());
+  if (existing) return existing;
+  const cat = { id: uid(), emoji, name };
+  db.categories.push(cat);
+  return cat;
+}
+
+function categoryForm(cat) {
+  openForm({
+    title: cat ? 'Edit category' : 'New category',
+    fields: [
+      { name: 'emoji', label: 'Emoji', placeholder: '🏠', required: true },
+      { name: 'name', label: 'Name', required: true, placeholder: 'e.g. Home, Work, Errands' },
+    ],
+    values: cat || { emoji: '🏷️' },
+    onSave: (d) => {
+      if (cat) Object.assign(cat, d);
+      else { const c = addCategory(`${d.emoji} ${d.name}`); state.taskCat = c.id; }
+    },
+    onDelete: cat && (() => {
+      remove('categories', cat.id);
+      db.tasks.forEach((t) => { if (t.category === cat.id) t.category = ''; });
+      state.taskCat = 'all';
+    }),
   });
 }
 
@@ -658,6 +728,7 @@ function placeForm(p) {
       { name: 'name', label: 'Name', required: true, placeholder: 'e.g. Blue Bottle Coffee' },
       { name: 'type', label: 'Type', type: 'select', options: PLACE_TYPES },
       { name: 'area', label: 'Neighborhood / city', placeholder: 'e.g. Downtown' },
+      { name: 'address', label: 'Address (optional, makes the map exact)', placeholder: 'e.g. 123 Main St, Austin' },
       { name: 'link', label: 'Instagram or website link', type: 'url', placeholder: 'https://instagram.com/p/…' },
       { name: 'notes', label: 'Notes', type: 'textarea', placeholder: 'What to order, who recommended it…' },
       { name: 'rating', label: 'Rating (after you go)', type: 'select', options: { '': '—', 1: '★', 2: '★★', 3: '★★★', 4: '★★★★', 5: '★★★★★' } },
@@ -694,6 +765,9 @@ const actions = {
   'edit-task': ({ id }) => taskForm(find('tasks', id)),
   'toggle-task': ({ id }) => { const t = find('tasks', id); t.done = !t.done; save(); render(); },
   'task-filter': ({ value }) => { state.taskFilter = value; render(); },
+  'task-cat': ({ value }) => { state.taskCat = value; render(); },
+  'add-category': () => categoryForm(),
+  'edit-category': ({ id }) => categoryForm(find('categories', id)),
 
   'edit-event': ({ id }) => eventForm(find('events', id)),
   'add-event': () => eventForm(null, state.calDay),

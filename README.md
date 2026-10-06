@@ -7,12 +7,12 @@ A personal organizer that works in any browser and installs on your phone like a
 | Section | What it's for |
 |---|---|
 | ☀️ **Today** | One screen with what's due, today's events, habits, upcoming birthdays/anniversaries, and a place to try |
-| ✅ **Tasks** | To-dos with due dates and priorities |
+| ✅ **Tasks** | To-dos with due dates, priorities and your own categories (with filter buttons) |
 | 📅 **Calendar** | Month view of events and tasks |
 | 📝 **Notes** | Searchable notes with tags |
 | 🔁 **Habits** | Daily check-ins with streaks |
 | 💛 **People** | For each person: go-to orders, favorites, date ideas, important dates |
-| 📍 **Places** | Coffee shops, bars and restaurants to try, with links to your saved Instagram posts |
+| 📍 **Places** | Coffee shops, bars and restaurants to try, with Google Maps links and your saved Instagram posts |
 
 Your data is saved **in the browser on your device** and works offline. Use **Export backup** on the Today screen to keep a copy or move it to another device.
 

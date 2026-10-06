@@ -95,6 +95,7 @@ async function startCloud() {
     return; // Stay device-only for this visit.
   }
   cloud.ready = true;
+  reviveRecurring();
   saveLocal();
   syncToCloud();
   render();
@@ -215,7 +216,7 @@ function taskRow(t) {
       <button class="check ${t.done ? 'on' : ''}" data-action="toggle-task" data-id="${t.id}" aria-label="Mark done">${t.done ? '✓' : ''}</button>
       <div class="grow">
         <div class="title">${esc(t.title)}</div>
-        <div class="task-meta">${dueLabel(t.due)}${t.category && find('categories', t.category) ? `<span class="cat-tag">${catLabel(find('categories', t.category))}</span>` : ''}</div>
+        <div class="task-meta">${t.recurring && t.done ? `<span class="meta">Comes back ${fmtDate(t.due)}</span>` : dueLabel(t.due)}${t.recurring ? `<span class="meta">${repeatLabel(t)}</span>` : ''}${t.category && find('categories', t.category) ? `<span class="cat-tag">${catLabel(find('categories', t.category))}</span>` : ''}</div>
       </div>
       <span class="prio ${t.priority || 'normal'}" title="${esc(t.priority || 'normal')} priority"></span>
     </div>`;
@@ -554,6 +555,17 @@ function openForm({ title, fields, values = {}, onSave, onDelete }) {
         const v = values[f.name] ?? '';
         const common = `name="${f.name}" ${f.required ? 'required' : ''} placeholder="${esc(f.placeholder || '')}"`;
         let input;
+        if (f.type === 'checkbox') {
+          return `<label class="check-label"><input type="checkbox" name="${f.name}" ${v ? 'checked' : ''}> ${esc(f.label)}</label>`;
+        }
+        if (f.type === 'repeat') {
+          return `<div class="repeat-row" data-show-if="${f.showIf}" ${values[f.showIf] ? '' : 'hidden'}>
+            <span>Every</span>
+            <input type="number" name="repeatEvery" min="1" max="365" inputmode="numeric" value="${esc(values.repeatEvery || 1)}" aria-label="How many">
+            <select name="repeatUnit" aria-label="Days, weeks or months">${Object.entries(REPEAT_UNITS).map(([k, l]) =>
+              `<option value="${k}" ${(values.repeatUnit || 'weeks') === k ? 'selected' : ''}>${l}</option>`).join('')}</select>
+          </div>`;
+        }
         if (f.type === 'textarea') input = `<textarea ${common}>${esc(v)}</textarea>`;
         else if (f.type === 'select') {
           input = `<select name="${f.name}">${Object.entries(f.options).map(([k, l]) =>
@@ -571,6 +583,11 @@ function openForm({ title, fields, values = {}, onSave, onDelete }) {
     </form>`;
 
   const form = modal.querySelector('form');
+  // Show fields that depend on a checkbox (e.g. the repeat options) only when it's checked.
+  form.querySelectorAll('[data-show-if]').forEach((el) => {
+    const box = form.querySelector(`[name="${el.dataset.showIf}"]`);
+    box.onchange = () => { el.hidden = !box.checked; };
+  });
   form.onsubmit = (e) => {
     e.preventDefault();
     const data = Object.fromEntries(new FormData(form));
@@ -596,6 +613,63 @@ function openForm({ title, fields, values = {}, onSave, onDelete }) {
 /* ---------- Forms per item type ---------- */
 
 const PRIORITIES = { normal: 'Normal', high: 'High', low: 'Low' };
+const REPEAT_UNITS = { days: 'days', weeks: 'weeks', months: 'months' };
+
+function repeatLabel(t) {
+  const n = Number(t.repeatEvery) || 1;
+  const unit = n === 1 ? t.repeatUnit.slice(0, -1) : t.repeatUnit;
+  return n === 1 ? `🔁 Every ${unit}` : `🔁 Every ${n} ${unit}`;
+}
+
+// Next due date: count from the due date, or from today if that's later (done late or no date).
+function nextDue(t) {
+  const t0 = todayStr();
+  const base = t.due && t.due > t0 ? t.due : t0;
+  const n = Math.max(1, Number(t.repeatEvery) || 1);
+  if (t.repeatUnit === 'days') return addDays(base, n);
+  if (t.repeatUnit === 'weeks') return addDays(base, n * 7);
+  // Months: keep the same day of month, or the last day if the month is shorter (Jan 31 -> Feb 28).
+  const d = parseYmd(base);
+  const target = new Date(d.getFullYear(), d.getMonth() + n, 1);
+  const lastDay = new Date(target.getFullYear(), target.getMonth() + 1, 0).getDate();
+  target.setDate(Math.min(d.getDate(), lastDay));
+  return ymd(target);
+}
+
+function toggleTask(t) {
+  if (t.recurring && !t.done) {
+    t.prevDue = t.due || '';
+    t.due = nextDue(t);
+    t.done = true;
+    toast(`🔁 Nice! “${t.title}” comes back ${fmtDate(t.due)}`);
+  } else if (t.recurring && t.done) {
+    // Undo a check-off: put the old due date back.
+    t.due = t.prevDue ?? t.due;
+    t.done = false;
+  } else {
+    t.done = !t.done;
+  }
+}
+
+// Recurring tasks that were checked off come back once their next due date arrives.
+function reviveRecurring() {
+  const t0 = todayStr();
+  let changed = false;
+  for (const t of db.tasks) {
+    if (t.recurring && t.done && t.due && t.due <= t0) { t.done = false; delete t.prevDue; changed = true; }
+  }
+  if (changed) save();
+}
+
+let toastTimer;
+function toast(msg) {
+  let el = document.getElementById('toast');
+  if (!el) { el = document.createElement('div'); el.id = 'toast'; el.setAttribute('role', 'status'); document.body.append(el); }
+  el.textContent = msg;
+  el.classList.add('show');
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => el.classList.remove('show'), 3500);
+}
 
 function taskForm(task) {
   openForm({
@@ -607,6 +681,8 @@ function taskForm(task) {
       { name: 'category', label: 'Category', type: 'select',
         options: Object.fromEntries([['', '— None —'], ...db.categories.map((c) => [c.id, `${c.emoji} ${c.name}`])]) },
       { name: 'newCategory', label: '…or create a new category', placeholder: 'e.g. 🏠 Home  (emoji optional)' },
+      { name: 'recurring', label: '🔁 Repeats', type: 'checkbox' },
+      { name: 'repeat', type: 'repeat', showIf: 'recurring' },
       { name: 'notes', label: 'Notes', type: 'textarea' },
     ],
     values: task || {
@@ -616,6 +692,8 @@ function taskForm(task) {
     onSave: (d) => {
       if (d.newCategory) d.category = addCategory(d.newCategory).id;
       delete d.newCategory;
+      d.recurring = !!d.recurring;
+      d.repeatEvery = Math.min(365, Math.max(1, parseInt(d.repeatEvery, 10) || 1));
       if (task) Object.assign(task, d);
       else db.tasks.push({ id: uid(), done: false, createdAt: Date.now(), ...d });
     },
@@ -763,7 +841,7 @@ const actions = {
     })[state.view]();
   },
   'edit-task': ({ id }) => taskForm(find('tasks', id)),
-  'toggle-task': ({ id }) => { const t = find('tasks', id); t.done = !t.done; save(); render(); },
+  'toggle-task': ({ id }) => { toggleTask(find('tasks', id)); save(); render(); },
   'task-filter': ({ value }) => { state.taskFilter = value; render(); },
   'task-cat': ({ value }) => { state.taskCat = value; render(); },
   'add-category': () => categoryForm(),
@@ -914,7 +992,7 @@ document.getElementById('import-file').addEventListener('change', async (e) => {
 // Re-render when the day changes (e.g. app left open overnight).
 let lastDay = todayStr();
 document.addEventListener('visibilitychange', () => {
-  if (!document.hidden && todayStr() !== lastDay) { lastDay = todayStr(); render(); }
+  if (!document.hidden && todayStr() !== lastDay) { lastDay = todayStr(); reviveRecurring(); render(); }
 });
 
 /* ---------- Offline support ---------- */
@@ -923,5 +1001,6 @@ if ('serviceWorker' in navigator && location.protocol !== 'file:') {
   navigator.serviceWorker.register('sw.js').catch(() => {});
 }
 
+reviveRecurring();
 render();
 startCloud();

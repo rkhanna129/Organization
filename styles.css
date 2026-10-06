@@ -229,3 +229,19 @@ dialog textarea[readonly] { font: 12px/1.4 ui-monospace, Menlo, monospace; min-h
 .edit-cat { margin: -4px 0 12px; }
 .place-links { display: flex; flex-wrap: wrap; gap: 4px 14px; margin-top: 2px; }
 .place-link { padding: 4px 0; }
+
+.check-label { flex-direction: row !important; align-items: center; gap: 10px !important; font-size: 1rem !important; color: var(--text) !important; cursor: pointer; }
+.check-label input { width: 20px; height: 20px; accent-color: var(--accent); }
+.repeat-row { display: flex; align-items: center; gap: 8px; margin-top: -4px; }
+.repeat-row input { width: 76px; }
+.repeat-row select { width: auto; flex: 1; }
+#toast {
+  position: fixed; left: 50%; bottom: calc(var(--nav-h) + env(safe-area-inset-bottom, 0px) + 12px);
+  transform: translate(-50%, 20px); opacity: 0; pointer-events: none; z-index: 20;
+  background: var(--text); color: var(--bg); padding: 10px 16px; border-radius: 12px;
+  font-size: .9rem; width: max-content; max-width: calc(100vw - 32px); text-align: center; transition: opacity .2s, transform .2s;
+}
+#toast.show { opacity: 1; transform: translate(-50%, 0); }
+@media (prefers-reduced-motion: reduce) { #toast { transition: none; } }
+
+[hidden] { display: none !important; }

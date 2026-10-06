@@ -245,3 +245,6 @@ dialog textarea[readonly] { font: 12px/1.4 ui-monospace, Menlo, monospace; min-h
 @media (prefers-reduced-motion: reduce) { #toast { transition: none; } }
 
 [hidden] { display: none !important; }
+
+.place-actions { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 8px; margin-bottom: 12px; }
+.ig-preview { max-height: 180px; max-width: 100%; object-fit: contain; border-radius: 10px; border: 1px solid var(--line); align-self: flex-start; }

@@ -480,7 +480,10 @@ const views = {
         ${[['all', 'All types'], ...Object.entries(PLACE_TYPES)].map(([k, l]) =>
           `<button class="chip ${type === k ? 'active' : ''}" data-action="place-type" data-value="${k}">${l}</button>`).join('')}
       </div>
-      ${f !== 'visited' && list.some((p) => !p.visited) ? '<button class="btn ghost" style="width:100%;margin-bottom:12px" data-action="pick-place">🎲 Pick one for me</button>' : ''}
+      <div class="place-actions">
+        <button class="btn ghost" data-action="from-instagram">📸 From Instagram</button>
+        ${f !== 'visited' && list.some((p) => !p.visited) ? '<button class="btn ghost" data-action="pick-place">🎲 Pick one for me</button>' : ''}
+      </div>
       <div class="list">${list.map((p) => `
         <div class="row ${p.visited ? 'done' : ''}" data-action="edit-place" data-id="${p.id}">
           <button class="check ${p.visited ? 'on' : ''}" data-action="toggle-place" data-id="${p.id}" aria-label="Visited">${p.visited ? '✓' : ''}</button>
@@ -828,7 +831,7 @@ function personItemForm(person, kind, item) {
   });
 }
 
-function placeForm(p) {
+function placeForm(p, prefill = {}) {
   openForm({
     title: p ? 'Edit place' : 'Save a place',
     fields: [
@@ -840,7 +843,7 @@ function placeForm(p) {
       { name: 'notes', label: 'Notes', type: 'textarea', placeholder: 'What to order, who recommended it…' },
       { name: 'rating', label: 'Rating (after you go)', type: 'select', options: { '': '—', 1: '★', 2: '★★', 3: '★★★', 4: '★★★★', 5: '★★★★★' } },
     ],
-    values: p || { type: state.placeType !== 'all' ? state.placeType : 'coffee' },
+    values: p || { type: state.placeType !== 'all' ? state.placeType : 'coffee', ...prefill },
     onSave: (d) => {
       d.rating = d.rating ? Number(d.rating) : null;
       if (p) Object.assign(p, d);
@@ -848,6 +851,140 @@ function placeForm(p) {
     },
     onDelete: p && (() => remove('places', p.id)),
   });
+}
+
+/* ---------- Add a place from Instagram ---------- */
+
+// The page can't open Instagram itself, so Claude reads a screenshot and/or
+// the caption the user provides, then the normal place form opens prefilled.
+
+// instagram.com/bluebottle/ -> "bluebottle". Post and reel links carry no name.
+function igHandle(url) {
+  const m = String(url).match(/instagram\.com\/([A-Za-z0-9._]+)/i);
+  const reserved = ['p', 'reel', 'reels', 'tv', 'stories', 'share', 'explore'];
+  return m && !reserved.includes(m[1].toLowerCase()) ? m[1] : '';
+}
+
+async function getSample() {
+  const sample = await window.claude?.use?.('sample').catch(() => null);
+  if (!sample) return { sample: null, images: false };
+  const caps = await sample.limits().catch(() => null);
+  return { sample, images: !!caps?.images };
+}
+
+async function instagramForm() {
+  const { sample, images } = await getSample();
+  let shot = null;
+  let ctl = null;
+  modal.innerHTML = `
+    <form method="dialog">
+      <h3>📸 Add from Instagram</h3>
+      <p class="meta">${sample
+        ? `Paste the post's link${images ? ' and add a screenshot of the post' : ' and its caption'}. Claude reads it and fills in the details for you to check.`
+        : 'Paste the post\'s link. You can fill in the rest on the next screen.'}</p>
+      <label>Instagram link<input type="url" id="ig-link" placeholder="https://www.instagram.com/p/…"></label>
+      ${sample && images ? `
+        <label>Screenshot of the post (recommended)
+          <input type="file" id="ig-shot" accept="image/*">
+        </label>
+        <img id="ig-preview" class="ig-preview" alt="Screenshot preview" hidden>` : ''}
+      ${sample ? '<label>Caption or other text (optional)<textarea id="ig-text" placeholder="Paste the caption, location or anything else from the post"></textarea></label>' : ''}
+      <p class="meta" id="ig-status" role="status"></p>
+      <div class="modal-actions"><div class="right">
+        <button type="button" class="btn ghost" data-modal="cancel">Cancel</button>
+        <button type="submit" class="btn" id="ig-go">${sample ? '✨ Fill in for me' : 'Continue'}</button>
+      </div></div>
+    </form>`;
+
+  const form = modal.querySelector('form');
+  const status = modal.querySelector('#ig-status');
+  const go = modal.querySelector('#ig-go');
+  const setShot = (file) => {
+    if (!file || !file.type.startsWith('image/')) return;
+    shot = file;
+    const img = modal.querySelector('#ig-preview');
+    if (img) { img.src = URL.createObjectURL(file); img.hidden = false; }
+  };
+  modal.querySelector('#ig-shot')?.addEventListener('change', (e) => setShot(e.target.files[0]));
+  // Pasting a copied screenshot (Ctrl/Cmd+V) also works.
+  form.addEventListener('paste', (e) => {
+    const file = [...(e.clipboardData?.files || [])].find((f) => f.type.startsWith('image/'));
+    if (file && images) { e.preventDefault(); setShot(file); }
+  });
+  modal.querySelector('[data-modal="cancel"]').onclick = () => { ctl?.abort(); modal.close(); };
+
+  form.onsubmit = async (e) => {
+    e.preventDefault();
+    const link = modal.querySelector('#ig-link').value.trim();
+    const text = modal.querySelector('#ig-text')?.value.trim() || '';
+    const handle = igHandle(link);
+    const fallback = { link, name: handle ? handle.replace(/[._]+/g, ' ') : '', notes: handle ? `@${handle} on Instagram` : '' };
+    if (!sample || (!shot && !text && !handle)) {
+      if (sample && !shot && !text) {
+        status.textContent = images
+          ? 'Add a screenshot or the caption so Claude has something to read. A post link on its own has no details in it.'
+          : 'Paste the caption so Claude has something to read. A post link on its own has no details in it.';
+        status.classList.add('overdue');
+        if (!link) return;
+        go.textContent = 'Skip, I\'ll type it';
+        go.onclick = () => { modal.close(); placeForm(null, fallback); };
+        return;
+      }
+      modal.close();
+      placeForm(null, fallback);
+      return;
+    }
+
+    ctl = new AbortController();
+    go.disabled = true;
+    status.classList.remove('overdue');
+    status.textContent = '✨ Reading the post… this can take up to a minute.';
+    const prompt = `You are filling in a "places to try" list from an Instagram post.
+Work out which place the post features (a cafe, bar, restaurant, dessert shop, activity...).
+If an influencer or food account posted it, use the place they tagged or named, not the poster's account.
+
+Reply with only a JSON object:
+{"name": "the place's name", "type": "coffee" | "bar" | "restaurant" | "dessert" | "activity" | "other",
+ "area": "neighborhood and/or city, or empty", "address": "street address only if it is shown, else empty",
+ "notes": "one short line: what to order or why it's recommended, or empty"}
+Use an empty string for anything you can't tell. Never make up an address.
+
+Instagram link: ${link || '(none)'}${handle ? `\nAccount in the link: @${handle}` : ''}
+${text ? `Text from the post:\n${text.slice(0, 4000)}` : ''}${shot ? '\nThe attached image is a screenshot of the post.' : ''}`;
+    try {
+      const r = await sample.json(prompt, { signal: ctl.signal, ...(shot ? { images: [shot] } : {}) });
+      const clean = (v) => (typeof v === 'string' ? v.trim().slice(0, 300) : '');
+      const type = PLACE_TYPES[r?.type] ? r.type : 'other';
+      modal.close();
+      placeForm(null, {
+        link,
+        name: clean(r?.name) || fallback.name,
+        type,
+        area: clean(r?.area),
+        address: clean(r?.address),
+        notes: clean(r?.notes),
+      });
+      toast('✨ Filled in. Check the details, then Save.');
+    } catch (err) {
+      if (err?.code === 'cancelled') return;
+      const why = {
+        not_granted: 'Claude wasn\'t allowed for this page, so fill in the details yourself.',
+        rate_limited: 'Claude is busy right now. You can fill this in yourself or try again in a bit.',
+        image_rejected: 'That image couldn\'t be read. Try a different screenshot.',
+      }[err?.code] || 'Couldn\'t fill it in automatically. You can type the details yourself.';
+      if (err?.code === 'image_rejected' || err?.code === 'rate_limited') {
+        status.textContent = why;
+        status.classList.add('overdue');
+        go.disabled = false;
+        return;
+      }
+      modal.close();
+      placeForm(null, fallback);
+      toast(why);
+    }
+  };
+  modal.showModal();
+  modal.querySelector('#ig-link').focus();
 }
 
 /* ---------- Actions (clicks) ---------- */
@@ -920,6 +1057,7 @@ const actions = {
   'toggle-place': ({ id }) => { const p = find('places', id); p.visited = !p.visited; save(); render(); },
   'place-filter': ({ value }) => { state.placeFilter = value; render(); },
   'place-type': ({ value }) => { state.placeType = value; render(); },
+  'from-instagram': () => { instagramForm(); },
   'pick-place': () => {
     const pool = db.places.filter((p) => !p.visited && (state.placeType === 'all' || p.type === state.placeType));
     const p = pool[Math.floor(Math.random() * pool.length)];

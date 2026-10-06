@@ -1,5 +1,7 @@
-// Personal Organizer — all data is stored in this browser (localStorage).
-// Use Export / Import on the Today screen to back up or move your data.
+// Personal Organizer.
+// Data is always kept in this browser (localStorage). When the app is opened
+// from its claude.ai link while signed in, it also syncs to the owner's Claude
+// account so the same entries show up on every device (see "Cloud sync").
 
 /* ---------- Storage ---------- */
 
@@ -14,15 +16,102 @@ function load() {
   }
 }
 
-function save() {
+function saveLocal() {
   try {
     localStorage.setItem(STORE_KEY, JSON.stringify(db));
-  } catch (e) {
-    ask('Could not save your data: ' + e.message, { okOnly: true });
+  } catch {
+    // Storage blocked (e.g. private window); cloud sync still works if available.
   }
 }
 
+function save() {
+  saveLocal();
+  syncToCloud();
+}
+
 let db = load();
+
+/* ---------- Cloud sync ---------- */
+
+// Each section is one private document under the viewer's own folder:
+// data/users/<id>/<section> = { items: [...] }
+const SECTIONS = Object.keys(emptyDb());
+const cloud = { store: null, uid: null, ready: false, synced: {}, busy: {}, again: {}, error: false };
+
+const sectionRef = (k) => cloud.store.doc(`data/users/${cloud.uid}/${k}`);
+const clone = (x) => JSON.parse(JSON.stringify(x));
+
+function setSyncStatus() {
+  const el = document.getElementById('sync-status');
+  if (!el) return;
+  const saving = SECTIONS.some((k) => cloud.busy[k]);
+  el.textContent = !cloud.ready ? 'Saved on this device'
+    : cloud.error ? '⚠️ Not synced. Check your connection'
+    : saving ? 'Saving…' : '☁️ Synced to your account';
+  el.classList.toggle('overdue', cloud.ready && cloud.error);
+}
+
+function pushSection(k) {
+  if (cloud.busy[k]) { cloud.again[k] = true; return; }
+  cloud.busy[k] = true;
+  setSyncStatus();
+  const json = JSON.stringify(db[k]);
+  sectionRef(k).set({ items: JSON.parse(json), updatedAt: Date.now() })
+    .then(() => { cloud.synced[k] = json; cloud.error = false; })
+    .catch(() => { cloud.error = true; })
+    .finally(() => {
+      cloud.busy[k] = false;
+      if (cloud.again[k]) { cloud.again[k] = false; syncToCloud(); }
+      setSyncStatus();
+    });
+}
+
+function syncToCloud() {
+  if (!cloud.ready) return;
+  for (const k of SECTIONS) if (JSON.stringify(db[k]) !== cloud.synced[k]) pushSection(k);
+}
+
+async function startCloud() {
+  if (!window.claude?.use) return;
+  const [store, user] = await Promise.all([window.claude.use('db'), window.claude.use('user')]);
+  const id = store && user ? await user.id() : null;
+  if (!id) return;
+  cloud.store = store;
+  cloud.uid = id;
+  try {
+    const snaps = await Promise.all(SECTIONS.map((k) => sectionRef(k).get()));
+    SECTIONS.forEach((k, i) => {
+      const snap = snaps[i];
+      if (snap.exists) {
+        // The account copy wins: it is what every device shares.
+        db[k] = clone(snap.data().items || []);
+        cloud.synced[k] = JSON.stringify(db[k]);
+      } else {
+        // Nothing in the account yet: anything already in this browser gets uploaded.
+        cloud.synced[k] = '[]';
+      }
+    });
+  } catch {
+    return; // Stay device-only for this visit.
+  }
+  cloud.ready = true;
+  saveLocal();
+  syncToCloud();
+  render();
+
+  // Live updates from other devices.
+  for (const k of SECTIONS) {
+    sectionRef(k).onSnapshot((snap) => {
+      if (!snap.exists || snap.metadata.hasPendingWrites || cloud.busy[k]) return;
+      const json = JSON.stringify(snap.data().items || []);
+      if (json === cloud.synced[k] || json === JSON.stringify(db[k])) { cloud.synced[k] = json; return; }
+      cloud.synced[k] = json;
+      db[k] = JSON.parse(json);
+      saveLocal();
+      if (!modal.open) render();
+    }, () => { cloud.error = true; setSyncStatus(); });
+  }
+}
 
 /* ---------- Helpers ---------- */
 
@@ -99,6 +188,7 @@ function render() {
   document.querySelectorAll('#tabs button').forEach((b) =>
     b.classList.toggle('active', b.dataset.view === state.view));
   main.innerHTML = views[state.view]();
+  setSyncStatus();
 }
 
 function go(view) {
@@ -221,7 +311,9 @@ const views = {
 
       <section>
         <h2>Backup</h2>
-        <p class="meta">Your data lives only in this browser. Export a backup now and then, or to move it to another device.</p>
+        <p class="meta">${cloud.ready
+          ? 'Your entries are saved to your Claude account, so they show up on any device where you open this link. You can also keep a copy of your own.'
+          : 'Your entries are saved in this browser. Open the app from its claude.ai link while signed in to sync across devices. Export a backup now and then.'}</p>
         <div class="backup">
           <button class="btn ghost small" data-action="export">⬇️ Export backup</button>
           <button class="btn ghost small" data-action="import">⬆️ Import backup</button>
@@ -758,3 +850,4 @@ if ('serviceWorker' in navigator && location.protocol !== 'file:') {
 }
 
 render();
+startCloud();

@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>Organizer</title>
+  <meta name="description" content="Personal organizer: tasks, calendar, notes, habits, people and places to try.">
+  <meta name="theme-color" content="#4f46e5">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="default">
+  <meta name="apple-mobile-web-app-title" content="Organizer">
+  <link rel="manifest" href="manifest.webmanifest">
+  <link rel="icon" href="icons/icon.svg" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="icons/icon-192.png">
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <header class="top">
+    <h1 id="view-title">Today</h1>
+    <button class="icon-btn" id="add-btn" data-action="add" aria-label="Add">＋</button>
+  </header>
+
+  <main id="main"></main>
+
+  <nav class="tabs" id="tabs">
+    <button data-view="today"><span>☀️</span>Today</button>
+    <button data-view="tasks"><span>✅</span>Tasks</button>
+    <button data-view="calendar"><span>📅</span>Calendar</button>
+    <button data-view="notes"><span>📝</span>Notes</button>
+    <button data-view="habits"><span>🔁</span>Habits</button>
+    <button data-view="people"><span>💛</span>People</button>
+    <button data-view="places"><span>📍</span>Places</button>
+  </nav>
+
+  <dialog id="modal"></dialog>
+  <input type="file" id="import-file" accept="application/json" hidden>
+
+  <script src="app.js"></script>
+</body>
+</html>

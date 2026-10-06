@@ -176,6 +176,8 @@ const state = {
   view: 'today',
   taskFilter: 'open',
   taskCat: 'all',
+  taskHigh: false,
+  taskMonth: false,
   calMonth: todayStr().slice(0, 7),
   calDay: todayStr(),
   noteQuery: '',
@@ -335,7 +337,15 @@ const views = {
     const f = state.taskFilter;
     const c = state.taskCat;
     if (c !== 'all' && c !== 'none' && !find('categories', c)) state.taskCat = 'all';
-    const byStatus = db.tasks.filter((t) => (f === 'open' ? !t.done : f === 'done' ? t.done : true));
+    const t0 = todayStr();
+    const monthEnd = ymd(new Date(Number(t0.slice(0, 4)), Number(t0.slice(5, 7)), 0));
+    // "This month": due by the end of this month (overdue included), or no due date at all.
+    const thisMonth = (t) => !t.due || t.due <= monthEnd;
+    const isHigh = (t) => t.priority === 'high';
+    const byStatus = db.tasks.filter((t) => (f === 'open' ? !t.done : f === 'done' ? t.done : true))
+      .filter((t) => !state.taskHigh || isHigh(t))
+      .filter((t) => !state.taskMonth || thisMonth(t));
+    const statusOnly = db.tasks.filter((t) => (f === 'open' ? !t.done : f === 'done' ? t.done : true));
     const inCat = (t, id) => (id === 'all' ? true : id === 'none' ? !find('categories', t.category) : t.category === id);
     let list = byStatus.filter((t) => inCat(t, state.taskCat));
     const count = (id) => byStatus.filter((t) => inCat(t, id)).length;
@@ -346,6 +356,10 @@ const views = {
       <div class="chips">
         ${['open', 'done', 'all'].map((k) =>
           `<button class="chip ${f === k ? 'active' : ''}" data-action="task-filter" data-value="${k}">${k[0].toUpperCase() + k.slice(1)}</button>`).join('')}
+      </div>
+      <div class="chips">
+        <button class="chip ${state.taskHigh ? 'active' : ''}" data-action="task-high" aria-pressed="${state.taskHigh}">🔥 High priority <span class="count">${statusOnly.filter(isHigh).length}</span></button>
+        <button class="chip ${state.taskMonth ? 'active' : ''}" data-action="task-month" aria-pressed="${state.taskMonth}">📆 This month <span class="count">${statusOnly.filter(thisMonth).length}</span></button>
       </div>
       <div class="chips">
         <button class="chip ${state.taskCat === 'all' ? 'active' : ''}" data-action="task-cat" data-value="all">📋 All <span class="count">${count('all')}</span></button>
@@ -844,6 +858,8 @@ const actions = {
   'toggle-task': ({ id }) => { toggleTask(find('tasks', id)); save(); render(); },
   'task-filter': ({ value }) => { state.taskFilter = value; render(); },
   'task-cat': ({ value }) => { state.taskCat = value; render(); },
+  'task-high': () => { state.taskHigh = !state.taskHigh; render(); },
+  'task-month': () => { state.taskMonth = !state.taskMonth; render(); },
   'add-category': () => categoryForm(),
   'edit-category': ({ id }) => categoryForm(find('categories', id)),
 

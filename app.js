@@ -267,7 +267,12 @@ const views = {
     const pick = toTry.length ? toTry[Math.floor(parseYmd(t) / 864e5) % toTry.length] : null;
 
     return `
-      <p class="meta" style="margin-top:-6px">${parseYmd(t).toLocaleDateString(undefined, { weekday: 'long', month: 'long', day: 'numeric' })}</p>
+      <p class="meta today-date">${parseYmd(t).toLocaleDateString(undefined, { weekday: 'long', month: 'long', day: 'numeric' })}</p>
+
+      <form class="quick-bar" id="quick-bar">
+        <input id="quick-bar-input" type="text" autocomplete="off" placeholder="✨ Quick add… e.g. dinner with Sarah Fri 7pm" aria-label="Quick add">
+        <button class="btn" type="submit">Add</button>
+      </form>
 
       <section>
         <h2>Due today & overdue</h2>
@@ -357,7 +362,7 @@ const views = {
     list = list.sort((a, b) => byDue(a, b) || prioRank[a.priority || 'normal'] - prioRank[b.priority || 'normal']);
     const dateChip = (k, label) => {
       const on = state.taskDates.includes(k);
-      return `<button class="chip ${on ? 'active' : ''}" data-action="task-date" data-value="${k}" aria-pressed="${on}">${label} <span class="count">${byStatus.filter(DATE_TESTS[k]).length}</span></button>`;
+      return `<button class="chip quick ${on ? 'active' : ''}" data-action="task-date" data-value="${k}" aria-pressed="${on}">${label} <span class="count">${byStatus.filter(DATE_TESTS[k]).length}</span></button>`;
     };
     const catChip = (id, label) => {
       const on = cats.includes(id);
@@ -365,23 +370,31 @@ const views = {
     };
     const selectedCats = cats.map((id) => find('categories', id)).filter(Boolean);
     return `
-      <div class="chips">
+      <div class="seg" role="group" aria-label="Show">
         ${['open', 'done', 'all'].map((k) =>
-          `<button class="chip ${f === k ? 'active' : ''}" data-action="task-filter" data-value="${k}">${k[0].toUpperCase() + k.slice(1)}</button>`).join('')}
+          `<button class="${f === k ? 'active' : ''}" data-action="task-filter" data-value="${k}" aria-pressed="${f === k}">${k[0].toUpperCase() + k.slice(1)}</button>`).join('')}
       </div>
-      <div class="chips">
-        <button class="chip ${state.taskHigh ? 'active' : ''}" data-action="task-high" aria-pressed="${state.taskHigh}">🔥 High priority <span class="count">${byStatus.filter(isHigh).length}</span></button>
-        ${dateChip('month', '📆 This month')}
-        ${dateChip('nodue', '🗓️ No due date')}
+      <div class="filter-panel">
+        <div class="filter-group">
+          <div class="filter-label">⚡ Quick filters</div>
+          <div class="chips">
+            <button class="chip quick ${state.taskHigh ? 'active' : ''}" data-action="task-high" aria-pressed="${state.taskHigh}">🔥 High priority <span class="count">${byStatus.filter(isHigh).length}</span></button>
+            ${dateChip('month', '📆 This month')}
+            ${dateChip('nodue', '🗓️ No due date')}
+          </div>
+        </div>
+        <div class="filter-group">
+          <div class="filter-label">🏷️ Categories</div>
+          <div class="chips">
+            <button class="chip ${!cats.length ? 'active' : ''}" data-action="task-cat" data-value="all">📋 All <span class="count">${byDate.length}</span></button>
+            ${db.categories.map((cat) => catChip(cat.id, catLabel(cat))).join('')}
+            ${db.categories.length && db.tasks.some((t) => !find('categories', t.category)) ? catChip('none', '📥 No category') : ''}
+            <button class="chip add-chip" data-action="add-category">＋ Category</button>
+          </div>
+          ${selectedCats.length ? `<div class="edit-cats">${selectedCats.map((c) =>
+            `<button class="btn ghost small" data-action="edit-category" data-id="${c.id}">✏️ Edit ${catLabel(c)}</button>`).join('')}</div>` : ''}
+        </div>
       </div>
-      <div class="chips">
-        <button class="chip ${!cats.length ? 'active' : ''}" data-action="task-cat" data-value="all">📋 All <span class="count">${byDate.length}</span></button>
-        ${db.categories.map((cat) => catChip(cat.id, catLabel(cat))).join('')}
-        ${db.categories.length && db.tasks.some((t) => !find('categories', t.category)) ? catChip('none', '📥 No category') : ''}
-        <button class="chip add-chip" data-action="add-category">＋ Category</button>
-      </div>
-      ${selectedCats.length ? `<div class="edit-cats">${selectedCats.map((c) =>
-        `<button class="btn ghost small" data-action="edit-category" data-id="${c.id}">✏️ Edit ${catLabel(c)}</button>`).join('')}</div>` : ''}
       <div class="list">${list.map(taskRow).join('') || empty(f === 'done' ? 'No finished tasks here yet.' : 'No tasks here. Tap ＋ to add one.')}</div>`;
   },
 
@@ -702,7 +715,7 @@ function toast(msg) {
   toastTimer = setTimeout(() => el.classList.remove('show'), 3500);
 }
 
-function taskForm(task) {
+function taskForm(task, prefill = {}) {
   openForm({
     title: task ? 'Edit task' : 'New task',
     fields: [
@@ -720,6 +733,7 @@ function taskForm(task) {
       due: state.view === 'calendar' ? state.calDay : '',
       // Picking exactly one category filter files new tasks there.
       category: state.view === 'tasks' && state.taskCats.length === 1 && find('categories', state.taskCats[0]) ? state.taskCats[0] : '',
+      ...prefill,
     },
     onSave: (d) => {
       if (d.newCategory) d.category = addCategory(d.newCategory).id;
@@ -763,7 +777,7 @@ function categoryForm(cat) {
   });
 }
 
-function eventForm(ev, date) {
+function eventForm(ev, date, prefill = {}) {
   openForm({
     title: ev ? 'Edit event' : 'New event',
     fields: [
@@ -772,13 +786,13 @@ function eventForm(ev, date) {
       { name: 'time', label: 'Time (optional)', type: 'time' },
       { name: 'notes', label: 'Notes / location', type: 'textarea' },
     ],
-    values: ev || { date: date || todayStr() },
+    values: ev || { date: date || todayStr(), ...prefill },
     onSave: (d) => (ev ? Object.assign(ev, d) : db.events.push({ id: uid(), ...d })),
     onDelete: ev && (() => remove('events', ev.id)),
   });
 }
 
-function noteForm(note) {
+function noteForm(note, prefill = {}) {
   openForm({
     title: note ? 'Edit note' : 'New note',
     fields: [
@@ -786,18 +800,18 @@ function noteForm(note) {
       { name: 'tag', label: 'Tag (optional)', placeholder: 'e.g. ideas, home, work' },
       { name: 'body', label: 'Note', type: 'textarea' },
     ],
-    values: note || {},
+    values: note || prefill,
     onSave: (d) => (note ? Object.assign(note, d, { updatedAt: Date.now() })
       : db.notes.push({ id: uid(), updatedAt: Date.now(), ...d })),
     onDelete: note && (() => remove('notes', note.id)),
   });
 }
 
-function habitForm(h) {
+function habitForm(h, prefill = {}) {
   openForm({
     title: h ? 'Edit habit' : 'New habit',
     fields: [{ name: 'name', label: 'Habit', required: true, placeholder: 'e.g. Read 10 pages' }],
-    values: h || {},
+    values: h || prefill,
     onSave: (d) => (h ? Object.assign(h, d) : db.habits.push({ id: uid(), log: {}, ...d })),
     onDelete: h && (() => remove('habits', h.id)),
   });
@@ -816,17 +830,21 @@ function personForm(p) {
   });
 }
 
-function personItemForm(person, kind, item) {
+function personItemForm(person, kind, item, prefill = {}) {
   const k = PERSON_KINDS[kind];
   const fields = [{ name: 'text', label: kind === 'date' ? 'What is it?' : k.one[0].toUpperCase() + k.one.slice(1), required: true, placeholder: k.hint }];
   if (kind === 'date') fields.push({ name: 'date', label: 'Date', type: 'date', required: true });
   if (kind === 'idea') fields.push({ name: 'date', label: 'Planned for (optional)', type: 'date' });
   fields.push({ name: 'details', label: 'Details', type: 'textarea' });
   openForm({
-    title: `${item ? 'Edit' : 'Add'} ${k.one}`,
+    title: `${item ? 'Edit' : 'Add'} ${k.one} · ${person.name}`,
     fields,
-    values: item || {},
-    onSave: (d) => (item ? Object.assign(item, d) : person.items.push({ id: uid(), kind, done: false, ...d })),
+    values: item || prefill,
+    onSave: (d) => {
+      if (item) return Object.assign(item, d);
+      if (!db.people.includes(person)) db.people.push(person); // a person new from Quick add
+      person.items.push({ id: uid(), kind, done: false, ...d });
+    },
     onDelete: item && (() => { person.items = person.items.filter((i) => i.id !== item.id); }),
   });
 }
@@ -851,6 +869,243 @@ function placeForm(p, prefill = {}) {
     },
     onDelete: p && (() => remove('places', p.id)),
   });
+}
+
+/* ---------- Quick add: type anything, Claude files it ---------- */
+
+const KINDS = {
+  task: '✅ Task', event: '📅 Event', note: '📝 Note', habit: '🔁 Habit', person: '💛 People', place: '📍 Place',
+};
+const dateOr = (v) => (/^\d{4}-\d{2}-\d{2}$/.test(v || '') ? v : '');
+const timeOr = (v) => (/^\d{2}:\d{2}$/.test(v || '') ? v : '');
+const str = (v, max = 500) => (typeof v === 'string' ? v.trim().slice(0, max) : '');
+const byName = (list, name) => list.find((x) => x.name.toLowerCase() === String(name || '').trim().toLowerCase());
+
+function quickPrompt(text) {
+  const t = todayStr();
+  const weekday = parseYmd(t).toLocaleDateString('en-US', { weekday: 'long' });
+  return `You turn a quick note into items for a personal organizer app. Today is ${weekday}, ${t}.
+
+Kinds of item and their fields:
+- task: a to-do. title, due ("YYYY-MM-DD" or ""), priority ("high"|"normal"|"low"), category (a category name or ""), categoryEmoji (one emoji, only for a new category), recurring (true/false), repeatEvery (number), repeatUnit ("days"|"weeks"|"months"), notes.
+- event: something at a set date, usually with a time (appointment, dinner, party). title, date ("YYYY-MM-DD"), time ("HH:MM" 24-hour or ""), notes.
+- note: information to keep for later. title, tag, body.
+- habit: something to check off daily. name.
+- person: a detail about a specific person. person (their name, or how the user refers to them, e.g. "Wife"), section ("order" = their go-to food/drink order, "favorite" = something they like, "idea" = a date idea or plan, "date" = birthday/anniversary/other yearly date), text (short label, e.g. "Starbucks: venti iced oat latte" or "Birthday"), date ("YYYY-MM-DD"; required for "date", use ${t.slice(0, 4)} if the year is unknown; optional planned date for "idea"), details.
+- place: a cafe, bar, restaurant, dessert shop or activity to try. name, type ("coffee"|"bar"|"restaurant"|"dessert"|"activity"|"other"), area, address, notes, link.
+
+Task categories that exist: ${db.categories.map((c) => c.name).join(', ') || '(none)'}. Use one when it clearly fits; only create a new category when the user names one.
+People already saved: ${db.people.map((p) => p.name).join(', ') || '(none)'}. Use the same name when the user means one of them.
+
+Rules: make one item per separate thing in the note. Turn relative dates ("Friday", "next week", "the 1st") into real dates on or after today. Keep the user's wording for titles, tidied up. Leave out anything not stated; don't invent details.
+
+Reply with only JSON: {"items": [{"kind": "task", "title": "...", ...}, ...]}
+
+The note:
+${text.slice(0, 4000)}`;
+}
+
+// Make Claude's answer safe and complete before it touches the app.
+function cleanItem(it) {
+  const kind = KINDS[it?.kind] ? it.kind : 'task';
+  if (kind === 'task') {
+    return {
+      kind, title: str(it.title, 200) || str(it.name, 200), due: dateOr(it.due),
+      priority: PRIORITIES[it.priority] ? it.priority : 'normal',
+      category: str(it.category, 60), categoryEmoji: str(it.categoryEmoji, 16),
+      recurring: !!it.recurring, repeatEvery: Math.min(365, Math.max(1, parseInt(it.repeatEvery, 10) || 1)),
+      repeatUnit: REPEAT_UNITS[it.repeatUnit] ? it.repeatUnit : 'weeks', notes: str(it.notes),
+    };
+  }
+  if (kind === 'event') return { kind, title: str(it.title, 200), date: dateOr(it.date) || todayStr(), time: timeOr(it.time), notes: str(it.notes) };
+  if (kind === 'note') return { kind, title: str(it.title, 200), tag: str(it.tag, 60), body: str(it.body, 4000) };
+  if (kind === 'habit') return { kind, name: str(it.name, 200) || str(it.title, 200) };
+  if (kind === 'person') {
+    return {
+      kind, person: str(it.person, 80) || 'Someone', section: PERSON_KINDS[it.section] ? it.section : 'favorite',
+      text: str(it.text, 200), date: dateOr(it.date), details: str(it.details),
+    };
+  }
+  return {
+    kind, name: str(it.name, 200), type: PLACE_TYPES[it.type] ? it.type : 'other',
+    area: str(it.area, 120), address: str(it.address, 200), notes: str(it.notes), link: safeUrl(it.link),
+  };
+}
+
+function itemSummary(it) {
+  if (it.kind === 'task') {
+    const cat = byName(db.categories, it.category);
+    return [it.priority === 'high' && '🔥 High', it.due && `Due ${fmtDate(it.due)}`,
+      it.recurring && repeatLabel(it), it.category && (cat ? catLabel(cat) : `${esc(it.categoryEmoji || '🏷️')} ${esc(it.category)} (new)`)];
+  }
+  if (it.kind === 'event') return [fmtDate(it.date), it.time && fmtTime(it.time), esc(it.notes)];
+  if (it.kind === 'note') return [it.tag && esc(it.tag), esc(it.body.slice(0, 80))];
+  if (it.kind === 'person') {
+    return [`${esc(it.person)}${byName(db.people, it.person) ? '' : ' (new)'} → ${PERSON_KINDS[it.section].label}`, it.date && fmtDate(it.date)];
+  }
+  if (it.kind === 'place') return [PLACE_TYPES[it.type], esc(it.area)];
+  return [];
+}
+const itemTitle = (it) => esc(it.title || it.name || it.text);
+
+// One item: open its normal form, already filled in, to review and save.
+function openItemForm(it) {
+  if (it.kind === 'task') {
+    const cat = byName(db.categories, it.category);
+    const { kind, category, categoryEmoji, ...rest } = it;
+    taskForm(null, { ...rest, category: cat?.id || '', newCategory: !cat && category ? `${categoryEmoji} ${category}`.trim() : '' });
+  } else if (it.kind === 'event') {
+    eventForm(null, it.date, { title: it.title, time: it.time, notes: it.notes });
+  } else if (it.kind === 'note') {
+    noteForm(null, { title: it.title, tag: it.tag, body: it.body });
+  } else if (it.kind === 'habit') {
+    habitForm(null, { name: it.name });
+  } else if (it.kind === 'person') {
+    const person = byName(db.people, it.person) || { id: uid(), name: it.person, items: [] };
+    personItemForm(person, it.section, null, { text: it.text, date: it.date, details: it.details });
+  } else {
+    const { kind, ...rest } = it;
+    placeForm(null, rest);
+  }
+}
+
+// Several items: add each straight to its section.
+function addItem(it) {
+  if (it.kind === 'task') {
+    const { kind, category, categoryEmoji, ...rest } = it;
+    const cat = category ? addCategory(`${categoryEmoji} ${category}`.trim()) : null;
+    db.tasks.push({ id: uid(), done: false, createdAt: Date.now(), ...rest, category: cat?.id || '' });
+  } else if (it.kind === 'event') {
+    db.events.push({ id: uid(), title: it.title, date: it.date, time: it.time, notes: it.notes });
+  } else if (it.kind === 'note') {
+    db.notes.push({ id: uid(), updatedAt: Date.now(), title: it.title, tag: it.tag, body: it.body });
+  } else if (it.kind === 'habit') {
+    db.habits.push({ id: uid(), log: {}, name: it.name });
+  } else if (it.kind === 'person') {
+    let person = byName(db.people, it.person);
+    if (!person) { person = { id: uid(), name: it.person, items: [] }; db.people.push(person); }
+    person.items.push({ id: uid(), kind: it.section, done: false, text: it.text, date: it.date, details: it.details });
+  } else {
+    const { kind, ...rest } = it;
+    db.places.push({ id: uid(), visited: false, createdAt: Date.now(), rating: null, ...rest });
+  }
+}
+
+async function quickAdd(initial = '') {
+  const sample = await window.claude?.use?.('sample').catch(() => null);
+  let ctl = null;
+  if (modal.open) modal.close();
+  modal.innerHTML = `
+    <form method="dialog">
+      <h3>✨ Quick add</h3>
+      <p class="meta">${sample
+        ? 'Type anything, as many things as you like. Claude works out what each one is and where it goes, and you check it before anything is saved.'
+        : 'Type a task and you can add the details on the next screen.'}</p>
+      <textarea id="quick-text" class="quick-text" placeholder="e.g. Pay rent on the 1st every month, high priority. Dinner with Sarah Friday 7pm. Wife's go-to order: venti iced oat latte."></textarea>
+      ${sample ? `<div class="quick-examples">
+        ${['Call the dentist tomorrow', 'Wife\'s birthday is March 3', 'Try Blue Bottle Coffee downtown', 'Gym every Monday, recurring weekly']
+          .map((x) => `<button type="button" class="chip" data-example="${esc(x)}">${esc(x)}</button>`).join('')}
+      </div>` : ''}
+      <p class="meta" id="quick-status" role="status"></p>
+      <div class="modal-actions"><div class="right">
+        <button type="button" class="btn ghost" data-modal="cancel">Cancel</button>
+        <button type="submit" class="btn" id="quick-go">${sample ? '✨ Sort it out' : 'Next'}</button>
+      </div></div>
+    </form>`;
+  const form = modal.querySelector('form');
+  const box = modal.querySelector('#quick-text');
+  const status = modal.querySelector('#quick-status');
+  const go = modal.querySelector('#quick-go');
+  box.value = initial;
+  modal.querySelectorAll('[data-example]').forEach((b) => { b.onclick = () => { box.value = b.dataset.example; box.focus(); }; });
+  modal.querySelector('[data-modal="cancel"]').onclick = () => { ctl?.abort(); modal.close(); };
+  // Enter sends; Shift+Enter adds a new line.
+  box.addEventListener('keydown', (e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); form.requestSubmit(); } });
+
+  form.onsubmit = async (e) => {
+    e.preventDefault();
+    const text = box.value.trim();
+    if (!text) { box.focus(); return; }
+    if (!sample) { modal.close(); taskForm(null, { title: text.slice(0, 200) }); return; }
+    ctl = new AbortController();
+    go.disabled = true;
+    status.classList.remove('overdue');
+    status.textContent = '✨ Sorting it out…';
+    try {
+      const r = await sample.json(quickPrompt(text), { signal: ctl.signal, modelTier: 'quick' });
+      const items = (Array.isArray(r?.items) ? r.items : Array.isArray(r) ? r : []).slice(0, 20).map(cleanItem)
+        .filter((it) => it.title || it.name || it.text);
+      if (!items.length) {
+        status.textContent = 'Couldn\'t find anything to add there. Try saying it a little differently.';
+        status.classList.add('overdue');
+        go.disabled = false;
+        return;
+      }
+      modal.close();
+      if (items.length === 1) openItemForm(items[0]);
+      else reviewItems(items, text);
+    } catch (err) {
+      if (err?.code === 'cancelled') return;
+      go.disabled = false;
+      if (err?.code === 'rate_limited') {
+        status.textContent = 'Claude is busy right now. Try again in a minute.';
+        status.classList.add('overdue');
+        return;
+      }
+      modal.close();
+      taskForm(null, { title: text.slice(0, 200) });
+      toast(err?.code === 'not_granted'
+        ? 'Claude wasn\'t allowed for this page, so this was saved as a task to edit.'
+        : 'Couldn\'t sort that automatically, so it\'s here as a task to edit.');
+    }
+  };
+  modal.showModal();
+  box.focus();
+}
+
+function reviewItems(items, text) {
+  modal.innerHTML = `
+    <form method="dialog">
+      <h3>✨ Here's what I found</h3>
+      <p class="meta">Uncheck anything you don't want. After adding, tap any item to change it.</p>
+      <div class="review-list">${items.map((it, i) => `
+        <label class="review-item">
+          <input type="checkbox" checked data-i="${i}">
+          <span class="review-body">
+            <span class="review-kind">${KINDS[it.kind]}</span>
+            <span class="review-title">${itemTitle(it)}</span>
+            <span class="meta">${itemSummary(it).filter(Boolean).join(' · ')}</span>
+          </span>
+        </label>`).join('')}</div>
+      <div class="modal-actions">
+        <button type="button" class="btn ghost" data-modal="back">‹ Change text</button>
+        <div class="right">
+          <button type="button" class="btn ghost" data-modal="cancel">Cancel</button>
+          <button type="submit" class="btn" id="review-add">Add ${items.length}</button>
+        </div>
+      </div>
+    </form>`;
+  const form = modal.querySelector('form');
+  const addBtn = modal.querySelector('#review-add');
+  const picked = () => [...form.querySelectorAll('[data-i]')].filter((b) => b.checked).map((b) => items[b.dataset.i]);
+  form.addEventListener('change', () => {
+    const n = picked().length;
+    addBtn.textContent = `Add ${n}`;
+    addBtn.disabled = !n;
+  });
+  modal.querySelector('[data-modal="cancel"]').onclick = () => modal.close();
+  modal.querySelector('[data-modal="back"]').onclick = () => quickAdd(text);
+  form.onsubmit = (e) => {
+    e.preventDefault();
+    const chosen = picked();
+    chosen.forEach(addItem);
+    save();
+    modal.close();
+    render();
+    const where = [...new Set(chosen.map((it) => KINDS[it.kind]))].join(', ');
+    toast(`✨ Added ${chosen.length}: ${where}`);
+  };
+  modal.showModal();
 }
 
 /* ---------- Add a place from Instagram ---------- */
@@ -1058,6 +1313,7 @@ const actions = {
   'place-filter': ({ value }) => { state.placeFilter = value; render(); },
   'place-type': ({ value }) => { state.placeType = value; render(); },
   'from-instagram': () => { instagramForm(); },
+  'quick-add': () => { quickAdd(); },
   'pick-place': () => {
     const pool = db.places.filter((p) => !p.visited && (state.placeType === 'all' || p.type === state.placeType));
     const p = pool[Math.floor(Math.random() * pool.length)];
@@ -1138,6 +1394,15 @@ document.addEventListener('click', (e) => {
   if (e.target.closest('a')) return; // let links open normally
   e.stopPropagation();
   actions[el.dataset.action]?.(el.dataset);
+});
+
+document.addEventListener('submit', (e) => {
+  if (e.target.id !== 'quick-bar') return;
+  e.preventDefault();
+  const input = document.getElementById('quick-bar-input');
+  const text = input.value.trim();
+  input.value = '';
+  quickAdd(text).then(() => { if (text) document.getElementById('quick-go')?.click(); });
 });
 
 document.addEventListener('input', (e) => {

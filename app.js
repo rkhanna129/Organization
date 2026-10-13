@@ -8,11 +8,28 @@
 const STORE_KEY = 'organizer.v1';
 const emptyDb = () => ({ tasks: [], categories: [], events: [], notes: [], habits: [], people: [], places: [] });
 
+// People sections are set up by the user. These are the starting ones; their ids
+// match the fixed sections earlier versions used, so saved items stay in place.
+function defaultSections() {
+  return [
+    { id: 'order', emoji: '☕', name: 'Go-to orders', hint: 'e.g. Starbucks: Venti iced oat latte, 2 pumps vanilla', date: 'none', yearly: false, details: true, check: false },
+    { id: 'favorite', emoji: '⭐', name: 'Favorites', hint: 'e.g. Flowers: peonies', date: 'none', yearly: false, details: true, check: false },
+    { id: 'idea', emoji: '💡', name: 'Date ideas & plans', hint: 'e.g. Sunset picnic at the park', date: 'optional', yearly: false, details: true, check: true },
+    { id: 'date', emoji: '🎂', name: 'Important dates', hint: 'e.g. Birthday, Anniversary', date: 'required', yearly: true, details: true, check: false },
+  ];
+}
+
+function withDefaults(data) {
+  const d = Object.assign(emptyDb(), data || {});
+  if (!Array.isArray(d.personSections)) d.personSections = defaultSections();
+  return d;
+}
+
 function load() {
   try {
-    return Object.assign(emptyDb(), JSON.parse(localStorage.getItem(STORE_KEY)) || {});
+    return withDefaults(JSON.parse(localStorage.getItem(STORE_KEY)));
   } catch {
-    return emptyDb();
+    return withDefaults();
   }
 }
 
@@ -35,7 +52,7 @@ let db = load();
 
 // Each section is one private document under the viewer's own folder:
 // data/users/<id>/<section> = { items: [...] }
-const SECTIONS = Object.keys(emptyDb());
+const SECTIONS = [...Object.keys(emptyDb()), 'personSections'];
 const cloud = { store: null, uid: null, ready: false, synced: {}, busy: {}, again: {}, error: false };
 
 const sectionRef = (k) => cloud.store.doc(`data/users/${cloud.uid}/${k}`);
@@ -120,6 +137,36 @@ const uid = () => Date.now().toString(36) + Math.random().toString(36).slice(2, 
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) =>
   ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const safeUrl = (u) => (/^https?:\/\//i.test(u || '') ? u : '');
+
+/* Rich text for notes boxes: bold, italic, underline and lists, stored as a small,
+   cleaned subset of HTML. Older plain-text notes still display as before. */
+const RICH_TAGS = new Set(['B', 'STRONG', 'I', 'EM', 'U', 'UL', 'OL', 'LI', 'BR', 'P', 'DIV']);
+const isRich = (v) => /<\/?(b|strong|i|em|u|ul|ol|li|br|p|div)\b/i.test(v || '');
+
+function sanitizeRich(html) {
+  // DOMParser builds an inert document: nothing in it runs or loads.
+  const root = new DOMParser().parseFromString(`<div>${html}</div>`, 'text/html').body.firstChild;
+  const walk = (node) => {
+    for (const child of [...node.childNodes]) {
+      if (child.nodeType === Node.TEXT_NODE) continue;
+      if (child.nodeType !== Node.ELEMENT_NODE || ['SCRIPT', 'STYLE', 'TEMPLATE'].includes(child.tagName)) { child.remove(); continue; }
+      walk(child);
+      if (RICH_TAGS.has(child.tagName)) [...child.attributes].forEach((a) => child.removeAttribute(a.name));
+      else child.replaceWith(...child.childNodes);
+    }
+  };
+  walk(root);
+  return root.innerHTML;
+}
+
+const richHtml = (v) => (isRich(v) ? sanitizeRich(v) : esc(v).replace(/\n/g, '<br>'));
+
+function plainText(v) {
+  if (!isRich(v)) return String(v ?? '');
+  const d = document.createElement('div');
+  d.innerHTML = sanitizeRich(v).replace(/<(br|\/li|\/p|\/div)[^>]*>/gi, ' $&');
+  return d.textContent.replace(/\s+/g, ' ').trim();
+}
 const pad = (n) => String(n).padStart(2, '0');
 const ymd = (d) => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
 const todayStr = () => ymd(new Date());
@@ -163,12 +210,15 @@ const PLACE_TYPES = {
   other: '📍 Other',
 };
 
-const PERSON_KINDS = {
-  order: { label: 'Go-to orders', one: 'order', hint: 'e.g. Starbucks: Venti iced oat latte, 2 pumps vanilla' },
-  favorite: { label: 'Favorites', one: 'favorite', hint: 'e.g. Flowers: peonies' },
-  idea: { label: 'Date ideas & plans', one: 'idea', hint: 'e.g. Sunset picnic at the park' },
-  date: { label: 'Important dates', one: 'date', hint: 'e.g. Birthday, Anniversary' },
-};
+const sectionLabel = (sec) => `${sec.emoji} ${esc(sec.name)}`;
+
+// Quick add needs somewhere to put a person detail even if every section was deleted.
+function firstSection() {
+  if (!db.personSections.length) {
+    db.personSections.push({ id: uid(), emoji: '📝', name: 'Notes', hint: '', date: 'none', yearly: false, details: true, check: false });
+  }
+  return db.personSections[0];
+}
 
 /* ---------- App state ---------- */
 
@@ -229,7 +279,7 @@ function eventRow(e) {
     <div class="row" data-action="edit-event" data-id="${e.id}">
       <div class="grow">
         <div class="title">${esc(e.title)}</div>
-        <span class="meta">${e.time ? fmtTime(e.time) : 'All day'}${e.notes ? ' · ' + esc(e.notes) : ''}</span>
+        <span class="meta">${e.time ? fmtTime(e.time) : 'All day'}${e.notes ? ' · ' + esc(plainText(e.notes)) : ''}</span>
       </div>
     </div>`;
 }
@@ -241,9 +291,10 @@ function upcomingDates(withinDays) {
   const t = todayStr();
   const year = Number(t.slice(0, 4));
   const out = [];
+  const yearly = new Set(db.personSections.filter((s) => s.yearly && s.date !== 'none').map((s) => s.id));
   for (const p of db.people) {
     for (const it of p.items) {
-      if (it.kind !== 'date' || !it.date) continue;
+      if (!yearly.has(it.kind) || !it.date) continue;
       let next = `${year}${it.date.slice(4)}`;
       if (next < t) next = `${year + 1}${it.date.slice(4)}`;
       const inDays = daysBetween(t, next);
@@ -465,13 +516,13 @@ const views = {
   people() {
     if (state.personId) return personDetail(find('people', state.personId));
     if (!db.people.length) {
-      return empty('Keep track of the people who matter: their go-to orders, favorites, date ideas and important dates.<br><br>Tap ＋ to add someone.');
+      return empty('Keep track of the people who matter: their go-to orders, favorites, date ideas, important dates, or any sections you set up.<br><br>Tap ＋ to add someone.');
     }
     return `<div class="list">${db.people.map((p) => {
-      const counts = Object.keys(PERSON_KINDS).map((k) => p.items.filter((i) => i.kind === k).length);
+      const counts = db.personSections.map((sec) => [sec, p.items.filter((i) => i.kind === sec.id).length]).filter(([, n]) => n);
       return `<div class="row" data-action="open-person" data-id="${p.id}">
         <div class="grow"><div class="title">💛 ${esc(p.name)}</div>
-        <span class="meta">${counts[0]} orders · ${counts[1]} favorites · ${counts[2]} ideas · ${counts[3]} dates</span></div>
+        <span class="meta">${counts.map(([sec, n]) => `${sec.emoji} ${n} ${esc(sec.name.toLowerCase())}`).join(' · ') || 'Nothing saved yet'}</span></div>
         <span class="meta">›</span>
       </div>`;
     }).join('')}</div>`;
@@ -503,7 +554,7 @@ const views = {
           <div class="grow">
             <div class="title">${esc(p.name)}</div>
             <div class="meta">${PLACE_TYPES[p.type] || ''}${p.area ? ' · ' + esc(p.area) : ''}${p.rating ? ` · <span class="stars">${'★'.repeat(p.rating)}</span>` : ''}</div>
-            ${p.notes ? `<div class="meta">${esc(p.notes)}</div>` : ''}
+            ${p.notes ? `<div class="meta">${esc(plainText(p.notes))}</div>` : ''}
             ${placeLinks(p)}
           </div>
         </div>`).join('') || empty(f === 'visited' ? 'No places checked off yet.' : 'Saved a spot on Instagram? Tap ＋ and paste the link here.')}</div>`;
@@ -520,40 +571,46 @@ function placeLinks(p) {
 function noteList() {
   const q = state.noteQuery.trim().toLowerCase();
   const list = db.notes
-    .filter((n) => !q || `${n.title} ${n.body} ${n.tag}`.toLowerCase().includes(q))
+    .filter((n) => !q || `${n.title} ${plainText(n.body)} ${n.tag}`.toLowerCase().includes(q))
     .sort((a, b) => b.updatedAt - a.updatedAt);
   if (!list.length) return empty(q ? 'No matching notes.' : 'No notes yet. Tap ＋ to write one.');
-  return `<div class="note-grid">${list.map((n) => `
-    <div class="card note" data-action="edit-note" data-id="${n.id}">
-      <h3>${esc(n.title || 'Untitled')}</h3>
+  return `<div class="list">${list.map((n) => `
+    <div class="row" data-action="edit-note" data-id="${n.id}">
+      <div class="grow"><div class="title">📝 ${esc(n.title || 'Untitled')}</div></div>
       ${n.tag ? `<span class="tag">${esc(n.tag)}</span>` : ''}
-      <p>${esc(n.body)}</p>
+      <span class="meta">›</span>
     </div>`).join('')}</div>`;
 }
 
 function personDetail(p) {
   if (!p) { state.personId = null; return views.people(); }
+  const longDate = (d) => parseYmd(d).toLocaleDateString(undefined, { month: 'long', day: 'numeric', year: 'numeric' });
   return `
     <button class="back" data-action="back-people">‹ All people</button>
-    ${Object.entries(PERSON_KINDS).map(([kind, k]) => {
-      let items = p.items.filter((i) => i.kind === kind);
-      if (kind === 'date') items = items.sort((a, b) => (a.date || '').slice(5).localeCompare((b.date || '').slice(5)));
-      if (kind === 'idea') items = items.sort((a, b) => Number(a.done) - Number(b.done));
+    ${db.personSections.map((sec) => {
+      let items = p.items.filter((i) => i.kind === sec.id);
+      if (sec.yearly) items = items.sort((a, b) => (a.date || '').slice(5).localeCompare((b.date || '').slice(5)));
+      else if (sec.date !== 'none') items = items.sort((a, b) => (a.date || '9999').localeCompare(b.date || '9999'));
+      if (sec.check) items = items.sort((a, b) => Number(a.done) - Number(b.done));
       return `
       <section>
-        <div class="sec-head"><h2>${k.label}</h2>
-          <button class="btn ghost small" data-action="add-person-item" data-kind="${kind}">＋ Add</button></div>
+        <div class="sec-head"><h2>${sectionLabel(sec)}</h2>
+          <div class="sec-actions">
+            <button class="btn ghost small" data-action="edit-section" data-id="${sec.id}" aria-label="Set up ${esc(sec.name)}">⚙️</button>
+            <button class="btn ghost small" data-action="add-person-item" data-kind="${sec.id}">＋ Add</button>
+          </div></div>
         <div class="list">${items.map((i) => `
-          <div class="row ${i.done ? 'done' : ''}" data-action="edit-person-item" data-id="${i.id}">
-            ${kind === 'idea' ? `<button class="check ${i.done ? 'on' : ''}" data-action="toggle-person-item" data-id="${i.id}" aria-label="Done">${i.done ? '✓' : ''}</button>` : ''}
+          <div class="row ${sec.check && i.done ? 'done' : ''}" data-action="edit-person-item" data-id="${i.id}">
+            ${sec.check ? `<button class="check ${i.done ? 'on' : ''}" data-action="toggle-person-item" data-id="${i.id}" aria-label="Done">${i.done ? '✓' : ''}</button>` : ''}
             <div class="grow">
               <div class="title">${esc(i.text)}</div>
-              ${i.date ? `<div class="meta">${kind === 'date' ? parseYmd(i.date).toLocaleDateString(undefined, { month: 'long', day: 'numeric', year: 'numeric' }) : 'Planned: ' + fmtDate(i.date)}</div>` : ''}
-              ${i.details ? `<div class="meta">${esc(i.details)}</div>` : ''}
+              ${i.date && sec.date !== 'none' ? `<div class="meta">📅 ${sec.yearly ? longDate(i.date) : fmtDate(i.date)}</div>` : ''}
+              ${i.details && sec.details ? `<div class="meta rich-view">${richHtml(i.details)}</div>` : ''}
             </div>
-          </div>`).join('') || empty(`No ${k.label.toLowerCase()} yet.`)}</div>
+          </div>`).join('') || empty(`Nothing in ${esc(sec.name)} yet.`)}</div>
       </section>`;
     }).join('')}
+    <button class="btn ghost new-section" data-action="add-section">＋ New section</button>
     <button class="btn danger" data-action="edit-person">Rename or delete ${esc(p.name)}</button>`;
 }
 
@@ -591,10 +648,11 @@ function ask(message, { ok = 'OK', danger = false, okOnly = false } = {}) {
 /* ---------- Form modal ---------- */
 
 // fields: [{ name, label, type, options, required, placeholder }]
-function openForm({ title, fields, values = {}, onSave, onDelete }) {
+function openForm({ title, intro = '', fields, values = {}, onSave, onDelete, deleteMessage }) {
   modal.innerHTML = `
     <form method="dialog">
       <h3>${esc(title)}</h3>
+      ${intro ? `<p class="meta">${intro}</p>` : ''}
       ${fields.map((f) => {
         const v = values[f.name] ?? '';
         const common = `name="${f.name}" ${f.required ? 'required' : ''} placeholder="${esc(f.placeholder || '')}"`;
@@ -610,7 +668,25 @@ function openForm({ title, fields, values = {}, onSave, onDelete }) {
               `<option value="${k}" ${(values.repeatUnit || 'weeks') === k ? 'selected' : ''}>${l}</option>`).join('')}</select>
           </div>`;
         }
-        if (f.type === 'textarea') input = `<textarea ${common}>${esc(v)}</textarea>`;
+        if (f.type === 'textarea') {
+          return `<div class="rich-field">
+            <span class="rich-label" id="lbl-${f.name}">${esc(f.label)}</span>
+            <div class="rich">
+              <div class="rich-bar" role="toolbar" aria-label="Formatting">
+                <button type="button" data-cmd="bold" aria-label="Bold" title="Bold"><b>B</b></button>
+                <button type="button" data-cmd="italic" aria-label="Italic" title="Italic"><i>I</i></button>
+                <button type="button" data-cmd="underline" aria-label="Underline" title="Underline"><u>U</u></button>
+                <span class="rich-sep"></span>
+                <button type="button" data-cmd="insertUnorderedList" aria-label="Bulleted list" title="Bulleted list">• List</button>
+                <button type="button" data-cmd="insertOrderedList" aria-label="Numbered list" title="Numbered list">1. List</button>
+                <span class="rich-sep"></span>
+                <button type="button" data-cmd="removeFormat" aria-label="Clear formatting" title="Clear formatting">Clear</button>
+              </div>
+              <div class="rich-area ${f.tall ? 'tall' : ''}" contenteditable="true" role="textbox" aria-multiline="true"
+                aria-labelledby="lbl-${f.name}" data-name="${f.name}" data-placeholder="${esc(f.placeholder || '')}">${richHtml(v)}</div>
+            </div>
+          </div>`;
+        }
         else if (f.type === 'select') {
           input = `<select name="${f.name}">${Object.entries(f.options).map(([k, l]) =>
             `<option value="${esc(k)}" ${String(v) === k ? 'selected' : ''}>${esc(l)}</option>`).join('')}</select>`;
@@ -632,10 +708,14 @@ function openForm({ title, fields, values = {}, onSave, onDelete }) {
     const box = form.querySelector(`[name="${el.dataset.showIf}"]`);
     box.onchange = () => { el.hidden = !box.checked; };
   });
+  setupRichEditors(form);
   form.onsubmit = (e) => {
     e.preventDefault();
     const data = Object.fromEntries(new FormData(form));
     for (const k in data) if (typeof data[k] === 'string') data[k] = data[k].trim();
+    form.querySelectorAll('.rich-area').forEach((el) => {
+      data[el.dataset.name] = plainText(el.innerHTML) ? sanitizeRich(el.innerHTML) : '';
+    });
     onSave(data);
     save();
     modal.close();
@@ -644,14 +724,56 @@ function openForm({ title, fields, values = {}, onSave, onDelete }) {
   modal.querySelector('[data-modal="cancel"]').onclick = () => modal.close();
   const del = modal.querySelector('[data-modal="delete"]');
   if (del) del.onclick = async () => {
-    if (!(await ask('Delete this? This cannot be undone.', { ok: 'Delete', danger: true }))) return;
+    if (!(await ask(deleteMessage || 'Delete this? This cannot be undone.', { ok: 'Delete', danger: true }))) return;
     onDelete();
     save();
     modal.close();
     render();
   };
   modal.showModal();
-  form.querySelector('input, textarea')?.focus();
+  form.querySelector('input, textarea, .rich-area')?.focus();
+}
+
+// Formatting toolbar. The buttons keep the cursor in the text box so the
+// format applies to what was selected.
+function setupRichEditors(form) {
+  form.querySelectorAll('.rich').forEach((wrap) => {
+    const area = wrap.querySelector('.rich-area');
+    let range = null;
+    const remember = () => {
+      const sel = document.getSelection();
+      if (sel.rangeCount && area.contains(sel.anchorNode)) range = sel.getRangeAt(0).cloneRange();
+    };
+    const refresh = () => {
+      wrap.querySelectorAll('[data-cmd]').forEach((b) => {
+        let on = false;
+        try { on = area.contains(document.getSelection().anchorNode) && document.queryCommandState(b.dataset.cmd); } catch { /* not supported */ }
+        b.classList.toggle('on', on);
+        b.setAttribute('aria-pressed', on);
+      });
+    };
+    area.addEventListener('keyup', () => { remember(); refresh(); });
+    area.addEventListener('mouseup', () => { remember(); refresh(); });
+    area.addEventListener('input', () => { remember(); if (area.innerHTML === '<br>') area.innerHTML = ''; });
+    // Paste as plain text so styles from other apps don't come along.
+    area.addEventListener('paste', (e) => {
+      e.preventDefault();
+      document.execCommand('insertText', false, e.clipboardData?.getData('text/plain') || '');
+    });
+    wrap.querySelectorAll('[data-cmd]').forEach((b) => {
+      b.addEventListener('mousedown', (e) => e.preventDefault());
+      b.addEventListener('click', () => {
+        if (document.activeElement !== area) area.focus();
+        // Only put the cursor back if it left the box (e.g. a tap on a phone); resetting
+        // it otherwise would undo a pending format like "bold off".
+        const sel = document.getSelection();
+        if (range && !area.contains(sel.anchorNode)) { sel.removeAllRanges(); sel.addRange(range); }
+        document.execCommand(b.dataset.cmd, false, null);
+        remember();
+        refresh();
+      });
+    });
+  });
 }
 
 /* ---------- Forms per item type ---------- */
@@ -798,7 +920,7 @@ function noteForm(note, prefill = {}) {
     fields: [
       { name: 'title', label: 'Title' },
       { name: 'tag', label: 'Tag (optional)', placeholder: 'e.g. ideas, home, work' },
-      { name: 'body', label: 'Note', type: 'textarea' },
+      { name: 'body', label: 'Note', type: 'textarea', tall: true },
     ],
     values: note || prefill,
     onSave: (d) => (note ? Object.assign(note, d, { updatedAt: Date.now() })
@@ -831,21 +953,58 @@ function personForm(p) {
 }
 
 function personItemForm(person, kind, item, prefill = {}) {
-  const k = PERSON_KINDS[kind];
-  const fields = [{ name: 'text', label: kind === 'date' ? 'What is it?' : k.one[0].toUpperCase() + k.one.slice(1), required: true, placeholder: k.hint }];
-  if (kind === 'date') fields.push({ name: 'date', label: 'Date', type: 'date', required: true });
-  if (kind === 'idea') fields.push({ name: 'date', label: 'Planned for (optional)', type: 'date' });
-  fields.push({ name: 'details', label: 'Details', type: 'textarea' });
+  const sec = find('personSections', kind) || firstSection();
+  const fields = [{ name: 'text', label: 'What is it?', required: true, placeholder: sec.hint || '' }];
+  if (sec.date !== 'none') {
+    fields.push({ name: 'date', type: 'date', required: sec.date === 'required',
+      label: sec.yearly ? 'Date (repeats every year)' : sec.date === 'required' ? 'Date' : 'Date (optional)' });
+  }
+  if (sec.details) fields.push({ name: 'details', label: 'Notes', type: 'textarea' });
   openForm({
-    title: `${item ? 'Edit' : 'Add'} ${k.one} · ${person.name}`,
+    title: `${item ? 'Edit' : 'Add to'} ${sec.emoji} ${sec.name} · ${person.name}`,
     fields,
     values: item || prefill,
     onSave: (d) => {
       if (item) return Object.assign(item, d);
       if (!db.people.includes(person)) db.people.push(person); // a person new from Quick add
-      person.items.push({ id: uid(), kind, done: false, ...d });
+      person.items.push({ id: uid(), kind: sec.id, done: false, ...d });
     },
     onDelete: item && (() => { person.items = person.items.filter((i) => i.id !== item.id); }),
+  });
+}
+
+const DATE_MODES = { none: 'No date', optional: 'Optional date', required: 'Date required' };
+
+function sectionForm(sec) {
+  const used = sec ? db.people.reduce((n, p) => n + p.items.filter((i) => i.kind === sec.id).length, 0) : 0;
+  openForm({
+    title: sec ? `Set up ${sec.emoji} ${sec.name}` : 'New People section',
+    intro: 'Sections are shared by everyone in People. Choose what each entry should have.',
+    fields: [
+      { name: 'emoji', label: 'Emoji', required: true, placeholder: '🎁' },
+      { name: 'name', label: 'Section name', required: true, placeholder: 'e.g. Gift ideas, Sizes, Allergies' },
+      { name: 'hint', label: 'Example entry (optional, shown as a hint)', placeholder: 'e.g. Candle from Anthropologie' },
+      { name: 'date', label: '📅 Date', type: 'select', options: DATE_MODES },
+      { name: 'yearly', label: '🔁 Date repeats every year (shows in "Coming up" on Today)', type: 'checkbox' },
+      { name: 'details', label: '📝 Notes box', type: 'checkbox' },
+      { name: 'check', label: '☑️ Check-off box (mark entries done)', type: 'checkbox' },
+    ],
+    values: sec || { emoji: '🎁', date: 'none', details: true },
+    onSave: (d) => {
+      const clean = {
+        emoji: d.emoji || '🏷️', name: d.name, hint: d.hint || '',
+        date: DATE_MODES[d.date] ? d.date : 'none', yearly: !!d.yearly, details: !!d.details, check: !!d.check,
+      };
+      if (sec) Object.assign(sec, clean);
+      else db.personSections.push({ id: uid(), ...clean });
+    },
+    onDelete: sec && (() => {
+      remove('personSections', sec.id);
+      db.people.forEach((p) => { p.items = p.items.filter((i) => i.kind !== sec.id); });
+    }),
+    deleteMessage: sec && (used
+      ? `Delete the ${sec.name} section and the ${used} ${used === 1 ? 'entry' : 'entries'} saved in it? This cannot be undone.`
+      : `Delete the ${sec.name} section?`),
   });
 }
 
@@ -891,7 +1050,7 @@ Kinds of item and their fields:
 - event: something at a set date, usually with a time (appointment, dinner, party). title, date ("YYYY-MM-DD"), time ("HH:MM" 24-hour or ""), notes.
 - note: information to keep for later. title, tag, body.
 - habit: something to check off daily. name.
-- person: a detail about a specific person. person (their name, or how the user refers to them, e.g. "Wife"), section ("order" = their go-to food/drink order, "favorite" = something they like, "idea" = a date idea or plan, "date" = birthday/anniversary/other yearly date), text (short label, e.g. "Starbucks: venti iced oat latte" or "Birthday"), date ("YYYY-MM-DD"; required for "date", use ${t.slice(0, 4)} if the year is unknown; optional planned date for "idea"), details.
+- person: a detail about a specific person. person (their name, or how the user refers to them, e.g. "Wife"), section (the id of one of these sections: ${db.personSections.map((sec) => `"${sec.id}" = ${sec.name}${sec.date === 'none' ? '' : sec.yearly ? ' (has a yearly date)' : ' (has a date)'}`).join('; ') || '"notes" = Notes'}), text (short label, e.g. "Starbucks: venti iced oat latte" or "Birthday"), date ("YYYY-MM-DD" when the section has a date; for yearly dates use ${t.slice(0, 4)} if the year is unknown), details.
 - place: a cafe, bar, restaurant, dessert shop or activity to try. name, type ("coffee"|"bar"|"restaurant"|"dessert"|"activity"|"other"), area, address, notes, link.
 
 Task categories that exist: ${db.categories.map((c) => c.name).join(', ') || '(none)'}. Use one when it clearly fits; only create a new category when the user names one.
@@ -922,7 +1081,7 @@ function cleanItem(it) {
   if (kind === 'habit') return { kind, name: str(it.name, 200) || str(it.title, 200) };
   if (kind === 'person') {
     return {
-      kind, person: str(it.person, 80) || 'Someone', section: PERSON_KINDS[it.section] ? it.section : 'favorite',
+      kind, person: str(it.person, 80) || 'Someone', section: find('personSections', it.section) ? it.section : firstSection().id,
       text: str(it.text, 200), date: dateOr(it.date), details: str(it.details),
     };
   }
@@ -941,7 +1100,7 @@ function itemSummary(it) {
   if (it.kind === 'event') return [fmtDate(it.date), it.time && fmtTime(it.time), esc(it.notes)];
   if (it.kind === 'note') return [it.tag && esc(it.tag), esc(it.body.slice(0, 80))];
   if (it.kind === 'person') {
-    return [`${esc(it.person)}${byName(db.people, it.person) ? '' : ' (new)'} → ${PERSON_KINDS[it.section].label}`, it.date && fmtDate(it.date)];
+    return [`${esc(it.person)}${byName(db.people, it.person) ? '' : ' (new)'} → ${sectionLabel(find('personSections', it.section) || firstSection())}`, it.date && fmtDate(it.date)];
   }
   if (it.kind === 'place') return [PLACE_TYPES[it.type], esc(it.area)];
   return [];
@@ -1259,7 +1418,8 @@ const actions = {
       calendar: () => eventForm(null, state.calDay),
       notes: () => noteForm(),
       habits: () => habitForm(),
-      people: () => (state.personId ? personItemForm(currentPerson(), 'order') : personForm()),
+      people: () => (!state.personId ? personForm()
+        : db.personSections.length ? personItemForm(currentPerson(), db.personSections[0].id) : sectionForm()),
       places: () => placeForm(),
     })[state.view]();
   },
@@ -1297,6 +1457,8 @@ const actions = {
   'open-person': ({ id }) => { state.view = 'people'; state.personId = id; render(); window.scrollTo(0, 0); },
   'back-people': () => { state.personId = null; render(); },
   'edit-person': () => personForm(currentPerson()),
+  'add-section': () => sectionForm(),
+  'edit-section': ({ id }) => sectionForm(find('personSections', id)),
   'add-person-item': ({ kind }) => personItemForm(currentPerson(), kind),
   'edit-person-item': ({ id }) => {
     const p = currentPerson();
@@ -1415,7 +1577,7 @@ document.addEventListener('input', (e) => {
 function restore(text) {
   const data = JSON.parse(text);
   if (typeof data !== 'object' || !data || Array.isArray(data)) throw new Error('Not a backup');
-  db = Object.assign(emptyDb(), data);
+  db = withDefaults(data);
   save();
   render();
 }

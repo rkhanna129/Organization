@@ -303,3 +303,27 @@ dialog textarea[readonly] { font: 12px/1.4 ui-monospace, Menlo, monospace; min-h
 .review-kind { font-size: .72rem; font-weight: 700; text-transform: uppercase; letter-spacing: .05em; color: var(--accent); }
 .review-title { font-size: 1rem; overflow-wrap: anywhere; }
 .today-date { margin: 0 0 10px; }
+
+/* People sections */
+.sec-actions { display: flex; gap: 6px; }
+.new-section { width: 100%; margin: -6px 0 18px; border: 1.5px dashed var(--accent); background: none; }
+.rich-view ul, .rich-view ol { margin: 2px 0; padding-left: 20px; }
+.rich-view p, .rich-view div { margin: 0; }
+
+/* Formatting toolbar for notes boxes */
+.rich-field { display: flex; flex-direction: column; gap: 4px; }
+.rich-label { font-size: .85rem; color: var(--muted); }
+.rich { border: 1px solid var(--line); border-radius: 10px; background: var(--bg); overflow: hidden; }
+.rich:focus-within { border-color: var(--accent); }
+.rich-bar { display: flex; flex-wrap: wrap; align-items: center; gap: 2px; padding: 4px; border-bottom: 1px solid var(--line); background: var(--card); }
+.rich-bar button {
+  border: none; background: none; border-radius: 7px; padding: 5px 9px; min-width: 32px;
+  font-size: .85rem; color: var(--text); cursor: pointer;
+}
+.rich-bar button:hover { background: var(--accent-soft); }
+.rich-bar button.on { background: var(--accent-soft); color: var(--accent); }
+.rich-sep { width: 1px; align-self: stretch; margin: 4px 2px; background: var(--line); }
+.rich-area { min-height: 90px; padding: 10px 12px; font-size: 1rem; outline: none; overflow-wrap: anywhere; }
+.rich-area.tall { min-height: 200px; }
+.rich-area ul, .rich-area ol { margin: 4px 0; padding-left: 22px; }
+.rich-area:empty::before { content: attr(data-placeholder); color: var(--muted); pointer-events: none; }
